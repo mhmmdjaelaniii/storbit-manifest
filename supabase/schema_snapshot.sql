@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 1YAZSthdvOzIHH20eM39BRlzwqPMVPH002CxeIqE3dhXHBSKSsrVbgWnXWCLSqB
+\restrict 2jVTMj3Ic7bzfBncMUuvPd8dwItp3A5XobKFv6Y3cnSYnYeuPLcVMBgHOwxhANf
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 18.4
@@ -2327,6 +2327,51 @@ COMMENT ON FUNCTION public.lock_inquiry_owner_when_closed() IS 'Menolak perubaha
 
 
 --
+-- Name: log_inquiry_status_change(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.log_inquiry_status_change() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+DECLARE
+  v_last_at   timestamptz;
+  v_start     timestamptz;
+  v_duration  integer;
+BEGIN
+  SELECT h.changed_at INTO v_last_at
+    FROM inquiry_status_history h
+   WHERE h.inquiry_id = NEW.id
+   ORDER BY h.changed_at DESC
+   LIMIT 1;
+
+  v_start := COALESCE(v_last_at, OLD.created_at);
+
+  IF v_start IS NOT NULL THEN
+    v_duration := GREATEST(0, EXTRACT(EPOCH FROM (now() - v_start))::int);
+  END IF;
+
+  INSERT INTO inquiry_status_history
+    (inquiry_id, from_status, to_status, changed_by, reason, duration_seconds)
+  VALUES
+    (NEW.id, OLD.status, NEW.status, auth.uid(),
+     CASE
+       WHEN NEW.status = 'CANCELLED' THEN NEW.cancel_reason
+       WHEN NEW.status = 'LOST' THEN COALESCE(
+              (SELECT lr.name FROM loss_reasons lr WHERE lr.id = NEW.loss_reason_id),
+              NEW.lost_reason)
+       ELSE NULL
+     END,
+     v_duration);
+
+  RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.log_inquiry_status_change() OWNER TO postgres;
+
+--
 -- Name: log_product_price_change(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -3584,6 +3629,24 @@ END; $$;
 
 
 ALTER FUNCTION public.sp_recompute_status(p_customer_id uuid, p_sp_no text) OWNER TO postgres;
+
+--
+-- Name: stamp_inquiry_closure(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.stamp_inquiry_closure() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO 'public'
+    AS $$
+BEGIN
+  NEW.closed_at := COALESCE(NEW.closed_at, now());
+  NEW.closed_by := COALESCE(NEW.closed_by, auth.uid());
+  RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.stamp_inquiry_closure() OWNER TO postgres;
 
 --
 -- Name: storbit_sp_customers(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -6767,6 +6830,12 @@ CREATE TABLE public.inquiries (
     estimated_value numeric,
     contact_id uuid,
     owner_id uuid,
+    closed_at timestamp with time zone,
+    closed_by uuid,
+    loss_reason_id uuid,
+    competitor_name text,
+    competitor_price numeric,
+    cancel_reason text,
     CONSTRAINT inquiries_status_check CHECK (((status)::text = ANY ((ARRAY['OPEN'::character varying, 'IN_REVIEW'::character varying, 'QUOTED'::character varying, 'NEGOTIATION'::character varying, 'WON'::character varying, 'LOST'::character varying, 'CANCELLED'::character varying])::text[])))
 );
 
@@ -6774,10 +6843,59 @@ CREATE TABLE public.inquiries (
 ALTER TABLE public.inquiries OWNER TO postgres;
 
 --
+-- Name: COLUMN inquiries.lost_reason; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.inquiries.lost_reason IS 'DISUPERSEDI oleh loss_reason_id (master-based) sejak batch Pipeline CRM v3, 28 Agu 2026. Baris lama dibiarkan apa adanya; penulisan baru lewat loss_reason_id. Drop menyusul di batch pembersihan terpisah, setelah nol pembaca tersisa.';
+
+
+--
 -- Name: COLUMN inquiries.owner_id; Type: COMMENT; Schema: public; Owner: postgres
 --
 
 COMMENT ON COLUMN public.inquiries.owner_id IS 'Pemilik inquiry. Di-backfill dari created_by (batch persiapan CRM v3). Nullable: created_by sendiri nullable.';
+
+
+--
+-- Name: COLUMN inquiries.closed_at; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.inquiries.closed_at IS 'Saat deal ditutup (WON/LOST/CANCELLED). Distempel otomatis trg_z_stamp_inquiry_closure; TIDAK ditimpa bila FE sudah mengirim nilainya sendiri.';
+
+
+--
+-- Name: COLUMN inquiries.closed_by; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.inquiries.closed_by IS 'Pelaku penutupan (auth.uid()). NULL bila penutupan terjadi tanpa konteks user.';
+
+
+--
+-- Name: COLUMN inquiries.loss_reason_id; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.inquiries.loss_reason_id IS 'Alasan kalah berbasis master loss_reasons. Menggantikan kolom teks bebas lost_reason.';
+
+
+--
+-- Name: COLUMN inquiries.competitor_name; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.inquiries.competitor_name IS 'Nama pesaing. Diwajibkan FE hanya bila loss_reasons.code = PRICE atau COMPETITOR.';
+
+
+--
+-- Name: COLUMN inquiries.competitor_price; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.inquiries.competitor_price IS 'Harga pesaing. Diwajibkan FE hanya bila loss_reasons.code = PRICE atau COMPETITOR.';
+
+
+--
+-- Name: COLUMN inquiries.cancel_reason; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.inquiries.cancel_reason IS 'Alasan pembatalan, teks bebas. SENGAJA bukan dari master: ini catatan operasional, bukan taksonomi kompetitif seperti alasan kalah.';
 
 
 --
@@ -6811,6 +6929,53 @@ CREATE TABLE public.inquiry_comments (
 
 
 ALTER TABLE public.inquiry_comments OWNER TO postgres;
+
+--
+-- Name: inquiry_status_history; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.inquiry_status_history (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    inquiry_id uuid NOT NULL,
+    from_status character varying(30),
+    to_status character varying(30) NOT NULL,
+    changed_by uuid,
+    changed_at timestamp with time zone DEFAULT now() NOT NULL,
+    reason text,
+    duration_seconds integer,
+    CONSTRAINT ish_duration_check CHECK (((duration_seconds IS NULL) OR (duration_seconds >= 0)))
+);
+
+
+ALTER TABLE public.inquiry_status_history OWNER TO postgres;
+
+--
+-- Name: TABLE inquiry_status_history; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON TABLE public.inquiry_status_history IS 'Riwayat perubahan inquiries.status. Audit-only: ditulis EKSKLUSIF oleh trg_z_log_inquiry_status_change (SECURITY DEFINER), nol policy tulis untuk authenticated.';
+
+
+--
+-- Name: COLUMN inquiry_status_history.changed_by; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.inquiry_status_history.changed_by IS 'auth.uid() saat transisi. NULL bila transisi dipicu trigger tanpa konteks user (mis. WON otomatis dari sales_orders).';
+
+
+--
+-- Name: COLUMN inquiry_status_history.reason; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.inquiry_status_history.reason IS 'Alasan bebas dari jalur manual. Diisi FE lewat kolom penutupan di inquiries; trigger menyalinnya bila tersedia.';
+
+
+--
+-- Name: COLUMN inquiry_status_history.duration_seconds; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.inquiry_status_history.duration_seconds IS 'Lama inquiry berada di status SEBELUMNYA, dalam detik. NULL = tidak diketahui (baris backfill). JANGAN diisi mundur dengan angka karangan.';
+
 
 --
 -- Name: journal_entries; Type: TABLE; Schema: public; Owner: postgres
@@ -9557,6 +9722,14 @@ ALTER TABLE ONLY public.inquiry_comments
 
 
 --
+-- Name: inquiry_status_history inquiry_status_history_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.inquiry_status_history
+    ADD CONSTRAINT inquiry_status_history_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: journal_entries journal_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -11038,6 +11211,13 @@ CREATE INDEX idx_hrga_requests_type ON public.hrga_requests USING btree (request
 
 
 --
+-- Name: idx_inquiries_closed_at; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_inquiries_closed_at ON public.inquiries USING btree (closed_at DESC) WHERE (closed_at IS NOT NULL);
+
+
+--
 -- Name: idx_inquiries_company_id; Type: INDEX; Schema: public; Owner: postgres
 --
 
@@ -11091,6 +11271,13 @@ CREATE INDEX idx_inquiry_comments_company_id ON public.inquiry_comments USING bt
 --
 
 CREATE INDEX idx_inquiry_comments_inquiry_id ON public.inquiry_comments USING btree (inquiry_id, created_at DESC);
+
+
+--
+-- Name: idx_ish_inquiry_changed; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_ish_inquiry_changed ON public.inquiry_status_history USING btree (inquiry_id, changed_at DESC);
 
 
 --
@@ -12144,10 +12331,24 @@ CREATE TRIGGER trg_z_lock_inquiry_owner BEFORE UPDATE OF owner_id ON public.inqu
 
 
 --
+-- Name: inquiries trg_z_log_inquiry_status_change; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_z_log_inquiry_status_change AFTER UPDATE ON public.inquiries FOR EACH ROW WHEN (((new.status)::text IS DISTINCT FROM (old.status)::text)) EXECUTE FUNCTION public.log_inquiry_status_change();
+
+
+--
 -- Name: products trg_z_products_price_history; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
 CREATE TRIGGER trg_z_products_price_history AFTER UPDATE OF default_price ON public.products FOR EACH ROW WHEN ((old.default_price IS DISTINCT FROM new.default_price)) EXECUTE FUNCTION public.log_product_price_change();
+
+
+--
+-- Name: inquiries trg_z_stamp_inquiry_closure; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_z_stamp_inquiry_closure BEFORE UPDATE ON public.inquiries FOR EACH ROW WHEN ((((new.status)::text = ANY ((ARRAY['WON'::character varying, 'LOST'::character varying, 'CANCELLED'::character varying])::text[])) AND ((old.status)::text IS DISTINCT FROM (new.status)::text))) EXECUTE FUNCTION public.stamp_inquiry_closure();
 
 
 --
@@ -13707,6 +13908,14 @@ ALTER TABLE ONLY public.hrga_requests
 
 
 --
+-- Name: inquiries inquiries_closed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.inquiries
+    ADD CONSTRAINT inquiries_closed_by_fkey FOREIGN KEY (closed_by) REFERENCES public.profiles(id);
+
+
+--
 -- Name: inquiries inquiries_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -13736,6 +13945,14 @@ ALTER TABLE ONLY public.inquiries
 
 ALTER TABLE ONLY public.inquiries
     ADD CONSTRAINT inquiries_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES public.accounts(id);
+
+
+--
+-- Name: inquiries inquiries_loss_reason_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.inquiries
+    ADD CONSTRAINT inquiries_loss_reason_id_fkey FOREIGN KEY (loss_reason_id) REFERENCES public.loss_reasons(id);
 
 
 --
@@ -13792,6 +14009,22 @@ ALTER TABLE ONLY public.inquiry_comments
 
 ALTER TABLE ONLY public.inquiry_comments
     ADD CONSTRAINT inquiry_comments_inquiry_id_fkey FOREIGN KEY (inquiry_id) REFERENCES public.inquiries(id);
+
+
+--
+-- Name: inquiry_status_history ish_changed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.inquiry_status_history
+    ADD CONSTRAINT ish_changed_by_fkey FOREIGN KEY (changed_by) REFERENCES public.profiles(id);
+
+
+--
+-- Name: inquiry_status_history ish_inquiry_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.inquiry_status_history
+    ADD CONSTRAINT ish_inquiry_fkey FOREIGN KEY (inquiry_id) REFERENCES public.inquiries(id) ON DELETE CASCADE;
 
 
 --
@@ -16873,6 +17106,21 @@ CREATE POLICY inquiry_comments_update ON public.inquiry_comments FOR UPDATE USIN
 
 
 --
+-- Name: inquiry_status_history; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE public.inquiry_status_history ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: inquiry_status_history inquiry_status_history_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY inquiry_status_history_read ON public.inquiry_status_history FOR SELECT TO authenticated USING ((EXISTS ( SELECT 1
+   FROM public.inquiries i
+  WHERE (i.id = inquiry_status_history.inquiry_id))));
+
+
+--
 -- Name: journal_entries; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
@@ -19825,6 +20073,15 @@ GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.inquiry_comments TO s
 
 
 --
+-- Name: TABLE inquiry_status_history; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.inquiry_status_history TO anon;
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.inquiry_status_history TO authenticated;
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.inquiry_status_history TO service_role;
+
+
+--
 -- Name: TABLE journal_entries; Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -20668,5 +20925,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public GRANT ALL ON T
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 1YAZSthdvOzIHH20eM39BRlzwqPMVPH002CxeIqE3dhXHBSKSsrVbgWnXWCLSqB
+\unrestrict 2jVTMj3Ic7bzfBncMUuvPd8dwItp3A5XobKFv6Y3cnSYnYeuPLcVMBgHOwxhANf
 
