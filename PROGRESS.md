@@ -32,6 +32,52 @@
 - **[2026-07-04]** Quotation: tambah opsi Cargo Mode "Project" (tanpa sub-field khusus) + fitur "If Any" per baris charge (dikecualikan dari semua total). Commit `4ebb436`.
 
 ## 2026-09-07
+### Migrasi lifecycle JALUR B terverifikasi PENUH di staging (belum produksi)
+
+`20260907000001_accounts_lifecycle_dual_write` diuji **penuh di staging** (ref `oovmlhilhqzejnawqkvt`).
+⛔ **BELUM dijalankan di produksi** — jangan dibaca sebagai LIVE.
+
+**Jalan uji:** T0 rekam keadaan → T1 kembalikan staging ke bentuk produksi (drop `account_lifecycle_history` +
+rename `lifecycle_stage` balik jadi `account_status`) → T1b kembalikan empat fungsi ke badan produksi → T2
+jalankan kelima STEP **verbatim** → 11 uji perilaku. **Seluruhnya lolos.**
+
+**Struktur:** 7 akun, kedua kolom identik, nol NULL · 6 trigger di `accounts` · backfill riwayat 7 = 7 akun ·
+default **asimetris** terpasang benar (`account_status` DEFAULT `'lead'`, `lifecycle_stage` DEFAULT NULL).
+
+**Dua klaim yang naik status dari penalaran jadi bukti:**
+- ⭐ **`trg_a_sync_lifecycle_columns` TERBUKTI di urutan PERTAMA**, sebelum `trg_set_customer_on_won` yang
+  membacanya. Alasan prefix `trg_a_` tadinya cuma penalaran urutan alfabetis di atas kertas.
+- ⭐ **uji 8** — akun ber-tahap `sql` + inquiry baru → kedua kolom jadi `prospect`. **Penyempitan Keputusan
+  Terbuka #36 terbukti TIDAK terbawa.** Ini uji terpenting di seluruh rangkaian.
+
+**Sisanya:** uji 0 (tulis nilai SAMA ke kolom lama → nol riwayat; jaring `IS DISTINCT FROM` bekerja) · uji 1/2
+(sinkron dua arah) · uji 3 (UPDATE `name` → nol perubahan, nol riwayat) · uji 4/5/6 (INSERT lewat kolom lama /
+kolom baru / tanpa keduanya → sekaligus membuktikan default asimetris benar, sinkron INSERT dua arah benar, dan
+`generate_customer_code` ber-`COALESCE` menyala di kedua jalur) · uji 7 & 9 (kedua jalur WON) · uji 10 (backfill).
+Seluruh uji ber-ROLLBACK bersih, termasuk `code_counters` kembali ke `last_number=1`; nol akun `ZZZTEST` dan nol
+inquiry uji tersisa.
+
+**⚠️ Jebakan yang dicatat supaya tak diulang:** md5 keempat fungsi yang direkam **T0.3/T0.4 TIDAK bisa dipakai
+sebagai target pemulihan T1b** — itu versi **pasca-rename** milik staging, formatnya sudah beda dari produksi,
+jadi mencocokkan T1b kepadanya **selalu gagal dan gagalnya PALSU**. Patokan yang benar: badan fungsi di
+`schema_snapshot.sql` **produksi**, dicocokkan **baris per baris** — dan pencocokan itu dilakukan, hasilnya cocok.
+T0.3 tetap berguna untuk satu hal: bukti bahwa T1b benar-benar mengubah keempat fungsi. Catatan ini juga ditaruh
+di blok PENGUJIAN file migrasinya, di T0.3, supaya terbaca oleh yang menjalankan T0 berikutnya.
+
+**Dua keadaan akhir yang SENGAJA dibiarkan — jangan "dirapikan":**
+- Staging berakhir di **keadaan transisi** (dua kolom, sinkron). Itu persis keadaan yang akan dialami produksi
+  dan yang dibutuhkan FE branch. Tidak dibersihkan.
+- **4 baris riwayat transisi NYATA di staging hilang permanen** saat T1 men-drop `account_lifecycle_history`
+  (8 baris → 7 sesudah backfill ulang). Isinya terekam lebih dulu di T0.2. Konsekuensi yang diterima; ini staging.
+  ⚠️ Di **produksi** T1 tidak berlaku sama sekali — produksi belum pernah punya tabel itu.
+
+**Status utang migrasi:** tetap **5 tersisa**, tapi `crm_v3_lifecycle` kini ditandai **digantikan** oleh
+`20260907000001` yang sudah terverifikasi staging dan **menunggu eksekusi produksi**. ⚠️ **Keputusan Terbuka #35
+BELUM ditutup** — jalan keluarnya terbukti, tapi blokirnya baru hilang setelah migrasinya benar-benar jalan di
+produksi. Butir #35 sendiri hidup di branch, bukan di `main`; faktanya disalin ke penanda #35 di `09_ROADMAP.md`
+supaya terbaca dari sini.
+
+
 ### Migrasi B3 CRM v3 LIVE di produksi — riwayat status inquiry + kolom penutupan
 
 **Dua migrasi naik ke produksi hari ini, dijalankan manual oleh Den di SQL Editor**, urutan mengikat dipatuhi
