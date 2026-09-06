@@ -72,8 +72,25 @@ ALTER TABLE public.accounts
     'customer'::character varying,   'free_agent'::character varying,
     'lost'::character varying])::text[])));
 
+-- ⚠️ URUTAN TAHAP SENGAJA TIDAK DINYATAKAN DI COMMENT INI — ia sedang jadi
+--    PERTANYAAN TERBUKA dan dua sumber saling bertentangan:
+--      (i)  05_WORKFLOW_MAP.md:124 (18 Jul 2026, menggambarkan perilaku LIVE)
+--           menyebut `lead/mql/sql -> prospect` sebagai PROMOSI, yang hanya
+--           masuk akal bila `sql` berada DI BAWAH `prospect`.
+--      (ii) src/modules/crm/v3/tokens.js:76 dan migrasi 20260827000002:93/:114
+--           menyatakan "URUTAN BARU (keputusan Den, batch persiapan CRM v3):
+--           lead -> mql -> prospect -> sql -> customer", yaitu `sql` DI ATAS
+--           `prospect`.
+--    Pertentangan ini sudah ditandai sejak 22 Jul 2026
+--    (docs/archive/audits/AUDIT_CRM_CHAIN_20260722.md:756 dan :811) dan BELUM
+--    PERNAH DIJAWAB di governance.
+--    COMMENT kolom adalah rujukan PERMANEN di skema produksi. Menuliskan salah
+--    satu urutan di sini berarti menetapkan pemenang lewat komentar migrasi —
+--    tempat yang salah untuk memutuskannya. Isi urutannya SETELAH pertanyaan
+--    terbukanya dijawab. Urutan CHECK/array di skema maupun FE BUKAN bukti:
+--    itu daftar keanggotaan, bukan pernyataan urutan.
 COMMENT ON COLUMN public.accounts.lifecycle_stage IS
-  'Sumbu LIFECYCLE akun. Urutan: lead -> mql -> prospect -> sql -> customer. Dua exit manual dari tahap mana pun: free_agent, lost. Berdampingan dengan account_status selama transisi jalur B; disinkronkan trg_a_sync_lifecycle_columns. TANPA default selama transisi (lihat kepala migrasi). account_status di-drop di 20260907000002.';
+  'Sumbu LIFECYCLE akun. Tujuh nilai: lead, mql, sql, prospect, customer, free_agent, lost. Gerbang yang HIDUP: akun jadi prospect hanya bila ada inquiry masuk (trigger set_prospect_on_inquiry); jadi customer lewat WON. free_agent dan lost adalah exit manual dari tahap mana pun. ⚠️ URUTAN tahapnya masih PERTANYAAN TERBUKA (dua sumber bertentangan — lihat komentar di migrasi 20260907000001); jangan simpulkan urutan dari daftar nilai di atas maupun dari urutan CHECK. Berdampingan dengan account_status selama transisi jalur B; disinkronkan trg_a_sync_lifecycle_columns. TANPA default selama transisi. account_status di-drop di 20260907000002.';
 
 COMMENT ON COLUMN public.accounts.account_status IS
   'DIPENSIUNKAN sejak 7 Sep 2026 — digantikan lifecycle_stage. Selama transisi keduanya disinkronkan otomatis: tulis ke salah satu, yang lain ikut. Di-drop di migrasi 20260907000002 setelah branch CRM v3 merge & stabil di produksi.';
@@ -263,6 +280,18 @@ $$;
 --    lama ditolak: perubahan perilaku bisnis menumpang di migrasi struktural.
 --    Uji 8 di blok PENGUJIAN di bawah ada khusus untuk membuktikan penyempitan
 --    itu TIDAK ikut terbawa.
+--    ⚠️ JARING DUA-KOLOM — SAMA seperti 3a, dan alasannya di sini LEBIH KUAT.
+--    Fungsi ini sebentuk persis dengan 3a: trigger di `inquiries` yang mengirim
+--    UPDATE ke `accounts`, dengan WHERE yang juga membaca lifecycle_stage
+--    PRA-SINKRON (lihat ANALISIS URUTAN di 3a — analisisnya berlaku identik).
+--    Bedanya pada mode kegagalan kalau invarian dua-kolom suatu hari patah:
+--      3a gagal dengan menstempel ULANG tanggal historis (buruk);
+--      3c gagal dengan MENURUNKAN akun `customer` menjadi `prospect` — kerusakan
+--      data yang lebih berat, dan senyap.
+--    Karena itu WHERE-nya menuntut KEDUA kolom berada di ketiga tahap sumber.
+--    ⛔ DAFTAR TAHAP TETAP TIGA NILAI DI KEDUA KOLOM. Jangan sekali-kali
+--       menyempitkan salah satunya jadi ('lead','mql') — itu Keputusan Terbuka
+--       #36 yang punya migrasinya sendiri.
 CREATE OR REPLACE FUNCTION public.set_prospect_on_inquiry() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'public'
@@ -272,7 +301,8 @@ BEGIN
   SET account_status  = 'prospect',
       lifecycle_stage = 'prospect'
   WHERE id = COALESCE(NEW.prospect_id, NEW.customer_id)
-    AND lifecycle_stage IN ('lead','mql','sql');
+    AND lifecycle_stage IN ('lead','mql','sql')
+    AND account_status  IN ('lead','mql','sql');   -- jaring, lihat catatan di atas
   RETURN NEW;
 END;
 $$;
