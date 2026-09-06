@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict PubZDL0LfwGwD0rgG4YmpMfbN4GSnoFcY7RnWiQhjL5hTaiWlfegmvdK4ZEljfm
+\restrict 1YAZSthdvOzIHH20eM39BRlzwqPMVPH002CxeIqE3dhXHBSKSsrVbgWnXWCLSqB
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 18.4
@@ -2298,6 +2298,35 @@ COMMENT ON FUNCTION public.is_super_admin() IS 'True if the current user holds s
 
 
 --
+-- Name: lock_inquiry_owner_when_closed(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.lock_inquiry_owner_when_closed() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO 'public'
+    AS $$
+BEGIN
+  IF NEW.owner_id IS DISTINCT FROM OLD.owner_id
+     AND OLD.status IN ('WON', 'LOST', 'CANCELLED') THEN
+    RAISE EXCEPTION
+      'Pemilik deal terkunci: inquiry % sudah berstatus %. Kepemilikan tidak bisa dipindahkan setelah deal ditutup, demi menjaga angka Sales Performance dan Win Rate historis tetap utuh.',
+      COALESCE(OLD.inquiry_no, OLD.id::text), OLD.status;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.lock_inquiry_owner_when_closed() OWNER TO postgres;
+
+--
+-- Name: FUNCTION lock_inquiry_owner_when_closed(); Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON FUNCTION public.lock_inquiry_owner_when_closed() IS 'Menolak perubahan inquiries.owner_id ketika status LAMA sudah WON/LOST/CANCELLED. Sengaja RAISE EXCEPTION, bukan silent revert. Dipasang oleh migrasi 20260830000002.';
+
+
+--
 -- Name: log_product_price_change(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -3864,6 +3893,10 @@ CREATE TABLE public.accounts (
     is_odoo_customer boolean DEFAULT false NOT NULL,
     invoice_payment_terms_days integer,
     CONSTRAINT accounts_account_status_check CHECK (((account_status)::text = ANY ((ARRAY['lead'::character varying, 'mql'::character varying, 'sql'::character varying, 'prospect'::character varying, 'customer'::character varying, 'free_agent'::character varying, 'lost'::character varying])::text[]))),
+    CONSTRAINT accounts_bant_authority_check CHECK (((bant_authority IS NULL) OR ((bant_authority >= 0) AND (bant_authority <= 3)))),
+    CONSTRAINT accounts_bant_budget_check CHECK (((bant_budget IS NULL) OR ((bant_budget >= 0) AND (bant_budget <= 3)))),
+    CONSTRAINT accounts_bant_need_check CHECK (((bant_need IS NULL) OR ((bant_need >= 0) AND (bant_need <= 3)))),
+    CONSTRAINT accounts_bant_timeline_check CHECK (((bant_timeline IS NULL) OR ((bant_timeline >= 0) AND (bant_timeline <= 3)))),
     CONSTRAINT accounts_pull_status_check CHECK ((pull_status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text]))),
     CONSTRAINT prospects_source_check CHECK (((source)::text = ANY (ARRAY['sales_visit'::text, 'cold_call'::text, 'referral'::text, 'existing_network'::text, 'exhibition'::text, 'instagram'::text, 'linkedin'::text, 'tiktok'::text, 'website'::text, 'walk_in'::text, 'other'::text])))
 );
@@ -5484,6 +5517,38 @@ COMMENT ON COLUMN public.branches.deleted_at IS 'Soft delete timestamp. NULL = a
 
 
 --
+-- Name: channel_types; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.channel_types (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    company_id uuid NOT NULL,
+    code character varying(20) NOT NULL,
+    name character varying(100) NOT NULL,
+    service_line character varying(30),
+    margin_floor numeric(5,2),
+    description text,
+    sort_order integer DEFAULT 0 NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    created_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp with time zone,
+    CONSTRAINT channel_types_line_check CHECK (((service_line IS NULL) OR ((service_line)::text = ANY (ARRAY['freight_forwarding'::text, 'customs'::text, 'trading'::text])))),
+    CONSTRAINT channel_types_margin_check CHECK (((margin_floor IS NULL) OR ((margin_floor >= (0)::numeric) AND (margin_floor <= (100)::numeric))))
+);
+
+
+ALTER TABLE public.channel_types OWNER TO postgres;
+
+--
+-- Name: TABLE channel_types; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON TABLE public.channel_types IS 'Channel penjualan per entitas (Direct/Forwarder/Hybrid). margin_floor dipakai gerbang margin Quotation (batch B4).';
+
+
+--
 -- Name: chart_of_accounts; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -6701,11 +6766,19 @@ CREATE TABLE public.inquiries (
     lost_reason text,
     estimated_value numeric,
     contact_id uuid,
+    owner_id uuid,
     CONSTRAINT inquiries_status_check CHECK (((status)::text = ANY ((ARRAY['OPEN'::character varying, 'IN_REVIEW'::character varying, 'QUOTED'::character varying, 'NEGOTIATION'::character varying, 'WON'::character varying, 'LOST'::character varying, 'CANCELLED'::character varying])::text[])))
 );
 
 
 ALTER TABLE public.inquiries OWNER TO postgres;
+
+--
+-- Name: COLUMN inquiries.owner_id; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.inquiries.owner_id IS 'Pemilik inquiry. Di-backfill dari created_by (batch persiapan CRM v3). Nullable: created_by sendiri nullable.';
+
 
 --
 -- Name: inquiry_comment_mentions; Type: TABLE; Schema: public; Owner: postgres
@@ -6780,6 +6853,36 @@ CREATE TABLE public.journal_entry_lines (
 
 
 ALTER TABLE public.journal_entry_lines OWNER TO postgres;
+
+--
+-- Name: loss_reasons; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.loss_reasons (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    company_id uuid,
+    code character varying(20) NOT NULL,
+    name character varying(100) NOT NULL,
+    category character varying(30),
+    applies_to character varying(10) DEFAULT 'deal'::character varying NOT NULL,
+    sort_order integer DEFAULT 0 NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    created_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp with time zone,
+    CONSTRAINT loss_reasons_applies_check CHECK (((applies_to)::text = ANY (ARRAY['deal'::text, 'account'::text, 'both'::text])))
+);
+
+
+ALTER TABLE public.loss_reasons OWNER TO postgres;
+
+--
+-- Name: TABLE loss_reasons; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON TABLE public.loss_reasons IS 'Taksonomi GLOBAL alasan kalah (deal/akun). company_id selalu NULL — jangan difilter di FE (gotcha #18).';
+
 
 --
 -- Name: meeting_moms; Type: TABLE; Schema: public; Owner: postgres
@@ -7870,6 +7973,68 @@ CREATE TABLE public.sales_visits (
 
 
 ALTER TABLE public.sales_visits OWNER TO postgres;
+
+--
+-- Name: sla_policies; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.sla_policies (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    company_id uuid NOT NULL,
+    code character varying(30) NOT NULL,
+    name character varying(100) NOT NULL,
+    policy_type character varying(20) NOT NULL,
+    service_line character varying(30),
+    transport_mode character varying(20),
+    target_status character varying(30),
+    target_scope character varying(30),
+    threshold integer NOT NULL,
+    time_unit character varying(20) NOT NULL,
+    inherits_from uuid,
+    action character varying(30) NOT NULL,
+    requires_human boolean DEFAULT false NOT NULL,
+    escalate_to character varying(30),
+    description text,
+    sort_order integer DEFAULT 0 NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    created_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp with time zone,
+    CONSTRAINT sla_policies_action_check CHECK (((action)::text = ANY (ARRAY['flag_stale'::text, 'create_task'::text, 'escalate_manager'::text, 'propose_cancel'::text, 'move_lead_pool'::text, 'set_free_agent'::text]))),
+    CONSTRAINT sla_policies_axis_check CHECK (((((policy_type)::text = 'prf_response'::text) AND (transport_mode IS NOT NULL) AND (target_status IS NULL) AND (target_scope IS NULL)) OR (((policy_type)::text = 'deal_aging'::text) AND (target_status IS NOT NULL) AND (target_scope IS NULL)) OR (((policy_type)::text = 'account_dormancy'::text) AND (target_scope IS NOT NULL) AND (transport_mode IS NULL) AND (target_status IS NULL)))),
+    CONSTRAINT sla_policies_human_check CHECK ((((action)::text <> 'propose_cancel'::text) OR (requires_human = true))),
+    CONSTRAINT sla_policies_line_check CHECK (((service_line IS NULL) OR ((service_line)::text = ANY (ARRAY['freight_forwarding'::text, 'customs'::text, 'trading'::text])))),
+    CONSTRAINT sla_policies_mode_check CHECK (((transport_mode IS NULL) OR ((transport_mode)::text = ANY (ARRAY['air'::text, 'fcl'::text, 'lcl'::text, 'inland'::text, 'project'::text, 'custom'::text])))),
+    CONSTRAINT sla_policies_scope_check CHECK (((target_scope IS NULL) OR ((target_scope)::text = ANY (ARRAY['pre_customer'::text, 'customer'::text])))),
+    CONSTRAINT sla_policies_threshold_check CHECK ((threshold > 0)),
+    CONSTRAINT sla_policies_type_check CHECK (((policy_type)::text = ANY (ARRAY['prf_response'::text, 'deal_aging'::text, 'account_dormancy'::text]))),
+    CONSTRAINT sla_policies_unit_check CHECK (((time_unit)::text = ANY (ARRAY['business_hour'::text, 'business_day'::text, 'day'::text, 'month'::text])))
+);
+
+
+ALTER TABLE public.sla_policies OWNER TO postgres;
+
+--
+-- Name: TABLE sla_policies; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON TABLE public.sla_policies IS 'Kebijakan SLA per entitas. Tiga policy_type: prf_response (sumbu moda), deal_aging (sumbu inquiries.status), account_dormancy (sumbu pre_customer/customer).';
+
+
+--
+-- Name: COLUMN sla_policies.inherits_from; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.sla_policies.inherits_from IS 'Dipakai baris IN_REVIEW: ambang batasnya mengikuti baris prf_response moda yang bersangkutan.';
+
+
+--
+-- Name: COLUMN sla_policies.requires_human; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.sla_policies.requires_human IS 'true = sistem hanya MENGUSULKAN, tidak pernah mengeksekusi sendiri.';
+
 
 --
 -- Name: sp_btb; Type: TABLE; Schema: public; Owner: postgres
@@ -8992,6 +9157,14 @@ ALTER TABLE ONLY public.branches
 
 
 --
+-- Name: channel_types channel_types_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.channel_types
+    ADD CONSTRAINT channel_types_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: chart_of_accounts chart_of_accounts_company_code_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -9400,6 +9573,14 @@ ALTER TABLE ONLY public.journal_entry_lines
 
 
 --
+-- Name: loss_reasons loss_reasons_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.loss_reasons
+    ADD CONSTRAINT loss_reasons_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: meeting_moms meeting_moms_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -9800,6 +9981,14 @@ ALTER TABLE ONLY public.sales_visits
 
 
 --
+-- Name: sla_policies sla_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sla_policies
+    ADD CONSTRAINT sla_policies_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: sp_btb sp_btb_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -10020,6 +10209,13 @@ ALTER TABLE ONLY public.weekly_meetings
 --
 
 CREATE UNIQUE INDEX accounts_code_unique ON public.accounts USING btree (code) WHERE (code IS NOT NULL);
+
+
+--
+-- Name: channel_types_company_code_line_uidx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE UNIQUE INDEX channel_types_company_code_line_uidx ON public.channel_types USING btree (company_id, code, COALESCE(service_line, '__ALL__'::character varying)) WHERE (deleted_at IS NULL);
 
 
 --
@@ -10856,6 +11052,13 @@ CREATE INDEX idx_inquiries_contact ON public.inquiries USING btree (contact_id);
 
 
 --
+-- Name: idx_inquiries_owner_id; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_inquiries_owner_id ON public.inquiries USING btree (owner_id) WHERE (deleted_at IS NULL);
+
+
+--
 -- Name: idx_inquiries_prospect_id; Type: INDEX; Schema: public; Owner: postgres
 --
 
@@ -11444,6 +11647,13 @@ CREATE INDEX idx_vendors_is_active ON public.vendors USING btree (is_active);
 
 
 --
+-- Name: loss_reasons_code_uidx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE UNIQUE INDEX loss_reasons_code_uidx ON public.loss_reasons USING btree (code) WHERE (deleted_at IS NULL);
+
+
+--
 -- Name: positions_company_code_active_uidx; Type: INDEX; Schema: public; Owner: postgres
 --
 
@@ -11476,6 +11686,13 @@ CREATE UNIQUE INDEX roles_company_code_active_uidx ON public.roles USING btree (
 --
 
 CREATE UNIQUE INDEX sales_orders_inquiry_unique_live ON public.sales_orders USING btree (inquiry_id) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: sla_policies_company_code_uidx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE UNIQUE INDEX sla_policies_company_code_uidx ON public.sla_policies USING btree (company_id, code) WHERE (deleted_at IS NULL);
 
 
 --
@@ -11917,6 +12134,13 @@ CREATE TRIGGER trg_warehouses_updated_at BEFORE UPDATE ON public.warehouses FOR 
 --
 
 CREATE TRIGGER trg_z_gen_customer_code_upd BEFORE UPDATE ON public.accounts FOR EACH ROW WHEN ((((new.code IS NULL) OR (new.code = ''::text)) AND (new.deleted_at IS NULL))) EXECUTE FUNCTION public.generate_customer_code();
+
+
+--
+-- Name: inquiries trg_z_lock_inquiry_owner; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_z_lock_inquiry_owner BEFORE UPDATE OF owner_id ON public.inquiries FOR EACH ROW EXECUTE FUNCTION public.lock_inquiry_owner_when_closed();
 
 
 --
@@ -12680,6 +12904,22 @@ ALTER TABLE ONLY public.branches
 
 ALTER TABLE ONLY public.branches
     ADD CONSTRAINT branches_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id);
+
+
+--
+-- Name: channel_types channel_types_company_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.channel_types
+    ADD CONSTRAINT channel_types_company_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
+-- Name: channel_types channel_types_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.channel_types
+    ADD CONSTRAINT channel_types_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id);
 
 
 --
@@ -13499,6 +13739,14 @@ ALTER TABLE ONLY public.inquiries
 
 
 --
+-- Name: inquiries inquiries_owner_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.inquiries
+    ADD CONSTRAINT inquiries_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES public.profiles(id);
+
+
+--
 -- Name: inquiries inquiries_prospect_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -13568,6 +13816,14 @@ ALTER TABLE ONLY public.journal_entry_lines
 
 ALTER TABLE ONLY public.journal_entry_lines
     ADD CONSTRAINT journal_entry_lines_journal_entry_id_fkey FOREIGN KEY (journal_entry_id) REFERENCES public.journal_entries(id) ON DELETE CASCADE;
+
+
+--
+-- Name: loss_reasons loss_reasons_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.loss_reasons
+    ADD CONSTRAINT loss_reasons_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id);
 
 
 --
@@ -14408,6 +14664,30 @@ ALTER TABLE ONLY public.sales_visits
 
 ALTER TABLE ONLY public.sales_visits
     ADD CONSTRAINT sales_visits_salesperson_id_fkey FOREIGN KEY (salesperson_id) REFERENCES public.profiles(id) ON DELETE SET NULL;
+
+
+--
+-- Name: sla_policies sla_policies_company_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sla_policies
+    ADD CONSTRAINT sla_policies_company_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id);
+
+
+--
+-- Name: sla_policies sla_policies_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sla_policies
+    ADD CONSTRAINT sla_policies_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id);
+
+
+--
+-- Name: sla_policies sla_policies_inherits_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sla_policies
+    ADD CONSTRAINT sla_policies_inherits_fkey FOREIGN KEY (inherits_from) REFERENCES public.sla_policies(id);
 
 
 --
@@ -15592,6 +15872,40 @@ CREATE POLICY branches_update ON public.branches FOR UPDATE USING ((public.is_su
 
 
 --
+-- Name: channel_types; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE public.channel_types ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: channel_types channel_types_delete; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY channel_types_delete ON public.channel_types FOR DELETE TO authenticated USING (public.is_super_admin());
+
+
+--
+-- Name: channel_types channel_types_insert; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY channel_types_insert ON public.channel_types FOR INSERT TO authenticated WITH CHECK (((company_id IN ( SELECT public.get_user_company_ids() AS get_user_company_ids)) AND public.is_admin_or_above()));
+
+
+--
+-- Name: channel_types channel_types_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY channel_types_read ON public.channel_types FOR SELECT TO authenticated USING ((((company_id IN ( SELECT public.get_user_company_ids() AS get_user_company_ids)) AND (deleted_at IS NULL)) OR public.is_super_admin()));
+
+
+--
+-- Name: channel_types channel_types_update; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY channel_types_update ON public.channel_types FOR UPDATE TO authenticated USING (((company_id IN ( SELECT public.get_user_company_ids() AS get_user_company_ids)) OR public.is_super_admin())) WITH CHECK ((((company_id IN ( SELECT public.get_user_company_ids() AS get_user_company_ids)) AND public.is_admin_or_above()) OR public.is_super_admin()));
+
+
+--
 -- Name: chart_of_accounts; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
@@ -16584,6 +16898,40 @@ ALTER TABLE public.journal_entry_lines ENABLE ROW LEVEL SECURITY;
 CREATE POLICY journal_entry_lines_read ON public.journal_entry_lines FOR SELECT TO authenticated USING ((public.is_super_admin() OR (EXISTS ( SELECT 1
    FROM public.journal_entries je
   WHERE ((je.id = journal_entry_lines.journal_entry_id) AND (je.company_id IN ( SELECT public.get_user_company_ids() AS get_user_company_ids)))))));
+
+
+--
+-- Name: loss_reasons; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE public.loss_reasons ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: loss_reasons loss_reasons_delete; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY loss_reasons_delete ON public.loss_reasons FOR DELETE TO authenticated USING (public.is_super_admin());
+
+
+--
+-- Name: loss_reasons loss_reasons_insert; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY loss_reasons_insert ON public.loss_reasons FOR INSERT TO authenticated WITH CHECK (public.is_admin_or_above());
+
+
+--
+-- Name: loss_reasons loss_reasons_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY loss_reasons_read ON public.loss_reasons FOR SELECT TO authenticated USING (((deleted_at IS NULL) OR public.is_super_admin()));
+
+
+--
+-- Name: loss_reasons loss_reasons_update; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY loss_reasons_update ON public.loss_reasons FOR UPDATE TO authenticated USING (public.is_admin_or_above()) WITH CHECK (public.is_admin_or_above());
 
 
 --
@@ -17709,6 +18057,40 @@ CREATE POLICY sales_visits_read ON public.sales_visits FOR SELECT USING ((((comp
 --
 
 CREATE POLICY sales_visits_update ON public.sales_visits FOR UPDATE USING (((company_id = public.get_user_company_id()) AND (public.is_manager_or_above() OR (salesperson_id = auth.uid()) OR (created_by = auth.uid()))));
+
+
+--
+-- Name: sla_policies; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE public.sla_policies ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: sla_policies sla_policies_delete; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY sla_policies_delete ON public.sla_policies FOR DELETE TO authenticated USING (public.is_super_admin());
+
+
+--
+-- Name: sla_policies sla_policies_insert; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY sla_policies_insert ON public.sla_policies FOR INSERT TO authenticated WITH CHECK (((company_id IN ( SELECT public.get_user_company_ids() AS get_user_company_ids)) AND public.is_admin_or_above()));
+
+
+--
+-- Name: sla_policies sla_policies_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY sla_policies_read ON public.sla_policies FOR SELECT TO authenticated USING ((((company_id IN ( SELECT public.get_user_company_ids() AS get_user_company_ids)) AND (deleted_at IS NULL)) OR public.is_super_admin()));
+
+
+--
+-- Name: sla_policies sla_policies_update; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY sla_policies_update ON public.sla_policies FOR UPDATE TO authenticated USING (((company_id IN ( SELECT public.get_user_company_ids() AS get_user_company_ids)) OR public.is_super_admin())) WITH CHECK ((((company_id IN ( SELECT public.get_user_company_ids() AS get_user_company_ids)) AND public.is_admin_or_above()) OR public.is_super_admin()));
 
 
 --
@@ -19027,6 +19409,15 @@ GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.branches TO service_r
 
 
 --
+-- Name: TABLE channel_types; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.channel_types TO anon;
+GRANT ALL ON TABLE public.channel_types TO authenticated;
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.channel_types TO service_role;
+
+
+--
 -- Name: TABLE chart_of_accounts; Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -19452,6 +19843,15 @@ GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.journal_entry_lines T
 
 
 --
+-- Name: TABLE loss_reasons; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.loss_reasons TO anon;
+GRANT ALL ON TABLE public.loss_reasons TO authenticated;
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.loss_reasons TO service_role;
+
+
+--
 -- Name: TABLE meeting_moms; Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -19750,6 +20150,15 @@ GRANT ALL ON TABLE public.sales_visit_logs TO service_role;
 
 GRANT ALL ON TABLE public.sales_visits TO authenticated;
 GRANT ALL ON TABLE public.sales_visits TO service_role;
+
+
+--
+-- Name: TABLE sla_policies; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.sla_policies TO anon;
+GRANT ALL ON TABLE public.sla_policies TO authenticated;
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.sla_policies TO service_role;
 
 
 --
@@ -20259,5 +20668,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public GRANT ALL ON T
 -- PostgreSQL database dump complete
 --
 
-\unrestrict PubZDL0LfwGwD0rgG4YmpMfbN4GSnoFcY7RnWiQhjL5hTaiWlfegmvdK4ZEljfm
+\unrestrict 1YAZSthdvOzIHH20eM39BRlzwqPMVPH002CxeIqE3dhXHBSKSsrVbgWnXWCLSqB
 
