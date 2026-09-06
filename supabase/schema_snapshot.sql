@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 2jVTMj3Ic7bzfBncMUuvPd8dwItp3A5XobKFv6Y3cnSYnYeuPLcVMBgHOwxhANf
+\restrict 3woiD72JOIOrITSz9owCfJJydeaRgnZE5b41SgztrxyVBLLq74hJESHzWPsasNu
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 18.4
@@ -737,7 +737,8 @@ declare
   prefix text;
   ckey text;
 begin
-  if NEW.account_status = 'customer' and (NEW.code is null or NEW.code = '') then
+  if COALESCE(NEW.lifecycle_stage, NEW.account_status) = 'customer'
+     and (NEW.code is null or NEW.code = '') then
     select code into prefix from public.companies
       where id = coalesce(NEW.owner_company_id, NEW.company_id);
     if prefix is null or prefix = '' then prefix := 'MSI'; end if;
@@ -2372,6 +2373,26 @@ $$;
 ALTER FUNCTION public.log_inquiry_status_change() OWNER TO postgres;
 
 --
+-- Name: log_lifecycle_change(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.log_lifecycle_change() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+BEGIN
+  IF NEW.lifecycle_stage IS DISTINCT FROM OLD.lifecycle_stage THEN
+    INSERT INTO account_lifecycle_history (account_id, from_stage, to_stage, changed_by)
+    VALUES (NEW.id, OLD.lifecycle_stage, NEW.lifecycle_stage, auth.uid());
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.log_lifecycle_change() OWNER TO postgres;
+
+--
 -- Name: log_product_price_change(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -3140,10 +3161,12 @@ BEGIN
 
   UPDATE public.accounts
   SET account_status     = 'customer',
+      lifecycle_stage    = 'customer',
       became_customer_at = COALESCE(became_customer_at, now()),
       converted_at       = COALESCE(converted_at, now())
   WHERE id = v_account_id
-    AND COALESCE(account_status,'') <> 'customer'
+    AND COALESCE(lifecycle_stage,'') <> 'customer'
+    AND COALESCE(account_status,'')  <> 'customer'
     AND deleted_at IS NULL;
 
   RETURN NEW;
@@ -3161,8 +3184,9 @@ CREATE FUNCTION public.set_customer_on_won() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  IF NEW.pipeline_stage = 'WON' AND COALESCE(NEW.account_status,'') <> 'customer' THEN
+  IF NEW.pipeline_stage = 'WON' AND COALESCE(NEW.lifecycle_stage,'') <> 'customer' THEN
     NEW.account_status     := 'customer';
+    NEW.lifecycle_stage    := 'customer';
     NEW.became_customer_at := COALESCE(NEW.became_customer_at, now());
     NEW.converted_at       := COALESCE(NEW.converted_at, now());
   END IF;
@@ -3323,9 +3347,11 @@ CREATE FUNCTION public.set_prospect_on_inquiry() RETURNS trigger
     AS $$
 BEGIN
   UPDATE public.accounts
-  SET account_status = 'prospect'
+  SET account_status  = 'prospect',
+      lifecycle_stage = 'prospect'
   WHERE id = COALESCE(NEW.prospect_id, NEW.customer_id)
-    AND account_status IN ('lead','mql','sql');
+    AND lifecycle_stage IN ('lead','mql','sql')
+    AND account_status  IN ('lead','mql','sql');
   RETURN NEW;
 END;
 $$;
@@ -3793,6 +3819,46 @@ $$;
 ALTER FUNCTION public.sync_last_activity_on_account() OWNER TO postgres;
 
 --
+-- Name: sync_lifecycle_columns(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.sync_lifecycle_columns() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO 'public'
+    AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.lifecycle_stage IS NULL THEN
+      NEW.lifecycle_stage := NEW.account_status;
+    ELSE
+      NEW.account_status  := NEW.lifecycle_stage;
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF NEW.account_status IS DISTINCT FROM OLD.account_status THEN
+    NEW.lifecycle_stage := NEW.account_status;
+  END IF;
+
+  IF NEW.lifecycle_stage IS DISTINCT FROM OLD.lifecycle_stage THEN
+    NEW.account_status := NEW.lifecycle_stage;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.sync_lifecycle_columns() OWNER TO postgres;
+
+--
+-- Name: FUNCTION sync_lifecycle_columns(); Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON FUNCTION public.sync_lifecycle_columns() IS 'Menjaga accounts.account_status dan accounts.lifecycle_stage identik selama transisi jalur B. Sengaja tanpa tie-break: nol jalur tulis menyentuh keduanya (diukur 7 Sep 2026). Dicabut oleh migrasi 20260907000002.';
+
+
+--
 -- Name: sync_profile_email(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -3885,6 +3951,37 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
+-- Name: account_lifecycle_history; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.account_lifecycle_history (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    account_id uuid NOT NULL,
+    from_stage character varying(50),
+    to_stage character varying(50) NOT NULL,
+    reason text,
+    changed_by uuid,
+    changed_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+ALTER TABLE public.account_lifecycle_history OWNER TO postgres;
+
+--
+-- Name: TABLE account_lifecycle_history; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON TABLE public.account_lifecycle_history IS 'Riwayat perubahan accounts.lifecycle_stage. Audit-only: ditulis EKSKLUSIF oleh trg_z_log_lifecycle_change (SECURITY DEFINER), nol policy tulis untuk authenticated.';
+
+
+--
+-- Name: COLUMN account_lifecycle_history.changed_by; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.account_lifecycle_history.changed_by IS 'auth.uid() saat perubahan. NULL bila perubahan datang dari trigger SECURITY DEFINER tanpa konteks user (mis. promosi otomatis dari inquiry).';
+
+
+--
 -- Name: accounts; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -3955,17 +4052,33 @@ CREATE TABLE public.accounts (
     pull_status text,
     is_odoo_customer boolean DEFAULT false NOT NULL,
     invoice_payment_terms_days integer,
+    lifecycle_stage character varying(50),
     CONSTRAINT accounts_account_status_check CHECK (((account_status)::text = ANY ((ARRAY['lead'::character varying, 'mql'::character varying, 'sql'::character varying, 'prospect'::character varying, 'customer'::character varying, 'free_agent'::character varying, 'lost'::character varying])::text[]))),
     CONSTRAINT accounts_bant_authority_check CHECK (((bant_authority IS NULL) OR ((bant_authority >= 0) AND (bant_authority <= 3)))),
     CONSTRAINT accounts_bant_budget_check CHECK (((bant_budget IS NULL) OR ((bant_budget >= 0) AND (bant_budget <= 3)))),
     CONSTRAINT accounts_bant_need_check CHECK (((bant_need IS NULL) OR ((bant_need >= 0) AND (bant_need <= 3)))),
     CONSTRAINT accounts_bant_timeline_check CHECK (((bant_timeline IS NULL) OR ((bant_timeline >= 0) AND (bant_timeline <= 3)))),
+    CONSTRAINT accounts_lifecycle_stage_check CHECK (((lifecycle_stage)::text = ANY (ARRAY[('lead'::character varying)::text, ('mql'::character varying)::text, ('sql'::character varying)::text, ('prospect'::character varying)::text, ('customer'::character varying)::text, ('free_agent'::character varying)::text, ('lost'::character varying)::text]))),
     CONSTRAINT accounts_pull_status_check CHECK ((pull_status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text]))),
     CONSTRAINT prospects_source_check CHECK (((source)::text = ANY (ARRAY['sales_visit'::text, 'cold_call'::text, 'referral'::text, 'existing_network'::text, 'exhibition'::text, 'instagram'::text, 'linkedin'::text, 'tiktok'::text, 'website'::text, 'walk_in'::text, 'other'::text])))
 );
 
 
 ALTER TABLE public.accounts OWNER TO postgres;
+
+--
+-- Name: COLUMN accounts.account_status; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.accounts.account_status IS 'DIPENSIUNKAN sejak 7 Sep 2026 — digantikan lifecycle_stage. Selama transisi keduanya disinkronkan otomatis: tulis ke salah satu, yang lain ikut. Di-drop di migrasi 20260907000002 setelah branch CRM v3 merge & stabil di produksi.';
+
+
+--
+-- Name: COLUMN accounts.lifecycle_stage; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.accounts.lifecycle_stage IS 'Sumbu LIFECYCLE akun. Tujuh nilai: lead, mql, sql, prospect, customer, free_agent, lost. Gerbang yang hidup: prospect lewat inquiry masuk, customer lewat WON. free_agent dan lost adalah exit manual. URUTAN TAHAP TIDAK DIKLAIM DI SINI — dua sumber bertentangan, lihat Keputusan Terbuka #37. Urutan nilai di CHECK/array BUKAN bukti urutan tahap. Berdampingan dengan account_status selama transisi jalur B; disinkronkan trg_a_sync_lifecycle_columns. TANPA default selama transisi. account_status di-drop di 20260907000002.';
+
 
 --
 -- Name: activities; Type: TABLE; Schema: public; Owner: postgres
@@ -8978,6 +9091,14 @@ CREATE TABLE public.weekly_meetings (
 ALTER TABLE public.weekly_meetings OWNER TO postgres;
 
 --
+-- Name: account_lifecycle_history account_lifecycle_history_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.account_lifecycle_history
+    ADD CONSTRAINT account_lifecycle_history_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: activities activities_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -10466,6 +10587,13 @@ CREATE INDEX idx_activities_type ON public.activities USING btree (type);
 --
 
 CREATE INDEX idx_activity_logs_activity ON public.activity_logs USING btree (activity_id);
+
+
+--
+-- Name: idx_alh_account_changed; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_alh_account_changed ON public.account_lifecycle_history USING btree (account_id, changed_at DESC);
 
 
 --
@@ -11974,6 +12102,13 @@ CREATE TRIGGER set_sales_orders_updated_at BEFORE UPDATE ON public.sales_orders 
 
 
 --
+-- Name: accounts trg_a_sync_lifecycle_columns; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_a_sync_lifecycle_columns BEFORE INSERT OR UPDATE ON public.accounts FOR EACH ROW EXECUTE FUNCTION public.sync_lifecycle_columns();
+
+
+--
 -- Name: approval_delegations trg_approval_delegations_updated_at; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
@@ -12338,6 +12473,13 @@ CREATE TRIGGER trg_z_log_inquiry_status_change AFTER UPDATE ON public.inquiries 
 
 
 --
+-- Name: accounts trg_z_log_lifecycle_change; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_z_log_lifecycle_change AFTER UPDATE ON public.accounts FOR EACH ROW EXECUTE FUNCTION public.log_lifecycle_change();
+
+
+--
 -- Name: products trg_z_products_price_history; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
@@ -12433,6 +12575,22 @@ ALTER TABLE ONLY public.activities
 
 ALTER TABLE ONLY public.activity_logs
     ADD CONSTRAINT activity_logs_activity_id_fkey FOREIGN KEY (activity_id) REFERENCES public.activities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: account_lifecycle_history alh_account_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.account_lifecycle_history
+    ADD CONSTRAINT alh_account_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
+
+
+--
+-- Name: account_lifecycle_history alh_changed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.account_lifecycle_history
+    ADD CONSTRAINT alh_changed_by_fkey FOREIGN KEY (changed_by) REFERENCES public.profiles(id);
 
 
 --
@@ -15340,6 +15498,12 @@ ALTER TABLE ONLY public.weekly_meetings
 
 
 --
+-- Name: account_lifecycle_history; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE public.account_lifecycle_history ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: accounts; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
@@ -15428,6 +15592,15 @@ CREATE POLICY activity_logs_update ON public.activity_logs FOR UPDATE TO authent
   WHERE (a.id = activity_logs.activity_id))) OR public.is_super_admin())) WITH CHECK (((EXISTS ( SELECT 1
    FROM public.activities a
   WHERE (a.id = activity_logs.activity_id))) OR public.is_super_admin()));
+
+
+--
+-- Name: account_lifecycle_history alh_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY alh_read ON public.account_lifecycle_history FOR SELECT TO authenticated USING ((EXISTS ( SELECT 1
+   FROM public.accounts a
+  WHERE (a.id = account_lifecycle_history.account_id))));
 
 
 --
@@ -19291,6 +19464,15 @@ GRANT ALL ON FUNCTION public.update_sp_item_dual(p_id uuid, p_item jsonb) TO aut
 
 
 --
+-- Name: TABLE account_lifecycle_history; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.account_lifecycle_history TO anon;
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.account_lifecycle_history TO authenticated;
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE public.account_lifecycle_history TO service_role;
+
+
+--
 -- Name: TABLE accounts; Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -20925,5 +21107,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public GRANT ALL ON T
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 2jVTMj3Ic7bzfBncMUuvPd8dwItp3A5XobKFv6Y3cnSYnYeuPLcVMBgHOwxhANf
+\unrestrict 3woiD72JOIOrITSz9owCfJJydeaRgnZE5b41SgztrxyVBLLq74hJESHzWPsasNu
 
