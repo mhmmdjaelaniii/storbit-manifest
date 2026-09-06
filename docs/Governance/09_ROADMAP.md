@@ -267,6 +267,34 @@ Detail granular: `PROGRESS.md` (2026-07-06…08) + `CLAUDE.md` Recent. Skema/alu
 
 ---
 
+## Utang Migrasi Produksi — CRM v3 (per 7 Sep 2026)
+
+> Sembilan migrasi CRM v3 ditulis di branch `feature/crm-v3-batch-persiapan`. **Filenya TIDAK ADA di `main`** — migrasi `main` melompat dari `20260826000003` ke `20260831000001`. Daftar ini ada di sini supaya status produksinya bisa dibaca dari `main` **tanpa membuka branch**, karena `main`-lah yang melayani produksi.
+
+**✅ SUDAH LIVE di produksi — JANGAN dijalankan ulang (4):**
+
+| migrasi | naik | bukti |
+|---|---|---|
+| `20260827000001_crm_v3_master_data` | 6 Sep 2026 | `loss_reasons` 12 · `channel_types` 9 · `sla_policies` 30 · `inquiries.owner_id` 531/531 |
+| `20260830000002_inquiry_owner_backfill_and_lock` | 6 Sep 2026 | `trg_z_lock_inquiry_owner` terpasang |
+| `20260828000001_inquiry_status_history` | **7 Sep 2026** | backfill **531 baris** = jumlah inquiry · nol durasi karangan |
+| `20260828000002_inquiries_closure_fields` | **7 Sep 2026** | **6 kolom** penutupan + 2 FK + index · **5 trigger** total di `inquiries` · sidik-jari rantai WON identik sebelum-sesudah |
+
+⚠️ **Header keempat file itu di branch masih menyatakan "PRODUKSI: belum dikonfirmasi" untuk sebagian di antaranya.** Yang berlaku adalah tabel ini. Koreksi header dikerjakan di branch secara terpisah.
+
+**⏳ BELUM dijalankan — tersisa 5:**
+
+| migrasi | status | catatan |
+|---|---|---|
+| `20260827000002_crm_v3_lifecycle` | ⛔ **TERTAHAN** | Me-RENAME `accounts.account_status` → `lifecycle_stage`; **produksi patah sebelum branch di-merge** (14 file / 29 baris hidup di `main` masih membaca kolom lama). Menunggu **Keputusan Terbuka #35** (jalur A vs B; **jalur B sudah dipilih, migrasi penggantinya belum ditulis**). ⚠️ Saat ditulis ulang: `set_prospect_on_inquiry` **disalin apa adanya**, daftar tahap tetap `('lead','mql','sql')` — lihat **Keputusan Terbuka #36**. |
+| `20260830000003_inquiries_rls_owner_based` | siap, menyusul | Menukar RLS `created_by = auth.uid()` → `owner_id = auth.uid()`. **Prasyaratnya sudah lunas** (backfill `owner_id` 531/531, 6 Sep). Efek samping disengaja: `WITH CHECK` ikut berbasis `owner_id`, sehingga **pengoperan deal jadi aksi manager-ke-atas**. |
+| `20260830000005_sales_targets` | siap, menyusul | Tabel target penjualan. **Nol pembaca di `src/` milik `main`** — aman kapan pun. |
+| `20260830000001_crm_menu_permissions_sales` | siap, menyusul | Seeding menu permission role `sales`. |
+| `20260830000004_accounts_source_add_whatsapp` | siap, **cek dulu** | Memperluas CHECK `accounts.source`. ⚠️ **Bandingkan CHECK barunya dengan nilai yang HIDUP di produksi sebelum dijalankan** (`cold_call`, `exhibition`, `existing_network`, `instagram`, `linkedin`, `other`, `referral`, `sales_visit`, `walk_in`, `website`, + NULL) — CHECK yang tak memuat salah satunya akan menolak baris lama. |
+
+---
+
+
 ## Next Up
 
 Berdasarkan kondisi LIVE (FASE 0-3 selesai) + `08_TECH_DEBT.md`:

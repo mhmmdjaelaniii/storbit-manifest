@@ -31,6 +31,52 @@
 - **[2026-07-03]** Redesign `SalesOrderPage` (Daftar Pesanan) mengikuti mockup `SalesOrderClean.jsx` — retheme navy/orange, filter bar Status+Periode, baris clickable ke Detail. Commit `dd75c24`.
 - **[2026-07-04]** Quotation: tambah opsi Cargo Mode "Project" (tanpa sub-field khusus) + fitur "If Any" per baris charge (dikecualikan dari semua total). Commit `4ebb436`.
 
+## 2026-09-07
+### Migrasi B3 CRM v3 LIVE di produksi — riwayat status inquiry + kolom penutupan
+
+**Dua migrasi naik ke produksi hari ini, dijalankan manual oleh Den di SQL Editor**, urutan mengikat dipatuhi
+(`20260828000001` dulu, baru `20260828000002` — yang kedua meng-`CREATE OR REPLACE` fungsi milik yang pertama).
+Seluruh verifikasi lolos.
+
+| bukti | hasil |
+|---|---|
+| backfill `inquiry_status_history` | **531 baris** = jumlah inquiry, nol durasi karangan |
+| kolom penutupan `inquiries` | **6 kolom** + 2 FK + `idx_inquiries_closed_at` |
+| trigger di `inquiries` | **5 total** (`trg_set_customer_on_inquiry_won`, `trg_set_prospect_on_inquiry`, `trg_z_lock_inquiry_owner`, `trg_z_log_inquiry_status_change`, `trg_z_stamp_inquiry_closure`) |
+| sidik-jari rantai WON | `set_customer_on_inquiry_won` **a75c5da6…** · `set_inquiry_won_on_so` **f8dbf22a…** — **identik sebelum & sesudah**, bukti keempat trigger terlarang tak tersentuh |
+
+**⭐ Penyimpangan urutan eksekusi — dicatat apa adanya, dan konsekuensinya POSITIF.** Rencananya fungsi
+`log_inquiry_status_change()` lahir dulu dalam versi antara yang `reason`-nya sengaja NULL (karena kolom sumbernya belum
+ada), baru diganti versi final di migrasi kedua. Di produksi, yang hidup **langsung versi final** — versi antara itu
+**tidak pernah menyala**. Akibatnya **nol baris riwayat lahir tanpa alasan**: setiap transisi LOST/CANCELLED yang
+tercatat sejak menit pertama sudah membawa `reason`. Ini fakta, bukan masalah, dan bukan alasan mengubah urutan
+migrasinya — urutan itu tetap mengikat bagi environment lain yang belum menjalankannya.
+
+**⚠️ Perilaku produksi BERUBAH, walau nol kode di-deploy.** Kode `main` tak menyentuh objek baru mana pun
+(`inquiry_status_history` nol rujukan di `src/`; keenam kolom penutupan juga nol). Tapi kedua trigger dipasang pada
+tabel `inquiries`, bukan pada jalur pemanggilnya, jadi **empat jalur tulis status** ikut menyala: manual LOST
+(`DealDetailPage.jsx:608`), dan tiga otomatis (`prf`→IN_REVIEW, `quotations`→QUOTED, `sales_orders`→WON). Sejak hari
+ini setiap perubahan status menulis baris riwayat, dan transisi ke WON/LOST/CANCELLED menstempel `closed_at`/`closed_by`
+— termasuk WON otomatis dari `sales_orders`, tanpa ada yang mengklik apa pun. Jalur LOST lama tetap benar karena fungsi
+final punya `COALESCE(nama loss_reason, NEW.lost_reason)`; tanpa fallback itu seluruh riwayat LOST dari `main` akan
+kosong.
+
+**+TD-229 (MEDIUM, baru)** — insert riwayat kini ada di **jalur kritis** setiap perubahan status; triggernya AFTER,
+jadi kegagalan insert = kegagalan UPDATE status. Penyangganya tunggal: `SECURITY DEFINER` milik `postgres` lolos RLS
+karena `FORCE ROW LEVEL SECURITY` tak dipasang. Pencegahan lengkap ada di TD-nya. ⚠️ Nomornya **TD-229, bukan TD-222**:
+TD-222…228 sudah dipakai branch, memakai 222 akan mengulang tabrakan penomoran yang dibereskan 6 Sep.
+
+**Daftar utang migrasi produksi dibuat di `09_ROADMAP.md`** (baru; `main` belum pernah punya). Dari sembilan migrasi
+CRM v3: **4 LIVE**, **5 tersisa** — `crm_v3_lifecycle` (tertahan Keputusan Terbuka #35), `rls_owner_based`,
+`sales_targets`, `crm_menu_permissions_sales`, `accounts_source_add_whatsapp`.
+
+⚠️ **Snapshot BELUM di-refresh** untuk kedua migrasi ini — Den menjalankan `pg_dump` manual terpisah. Sampai itu jalan,
+`schema_snapshot.sql` (`229671b`, 136 tabel) **belum memuat** `inquiry_status_history` maupun keenam kolom penutupan.
+
+⚠️ **Header kedua file migrasi di branch masih menyatakan "PRODUKSI: belum dikonfirmasi"** dan memuat tiga klaim yang
+sudah basi. Dikoreksi di branch lewat commit terpisah — filenya memang tidak ada di `main`.
+
+
 ## 2026-09-06
 ### Keputusan: `schema_snapshot.sql` TETAP schema-only — kontradiksi §4 ditutup
 
