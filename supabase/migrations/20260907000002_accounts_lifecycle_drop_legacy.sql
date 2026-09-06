@@ -161,8 +161,22 @@ ALTER TABLE public.accounts DROP COLUMN account_status;
 -- dan bentuk akhirnya bisa disamakan dengan kolom lama: DEFAULT 'lead'.
 ALTER TABLE public.accounts ALTER COLUMN lifecycle_stage SET DEFAULT 'lead';
 
+-- ⚠️ COMMENT di bawah SENGAJA TIDAK MENYATAKAN URUTAN TAHAP, dan ia MENIMPA
+--    COMMENT yang dipasang 20260907000001 — jadi keduanya harus tetap seragam.
+--    Kalau di sini urutannya dituliskan, klaim yang sudah dicabut di migrasi
+--    pertama akan hidup kembali begitu file ini jalan.
+--    Sebabnya: urutan tahap masih PERTANYAAN TERBUKA, dua sumber bertentangan —
+--      (i)  05_WORKFLOW_MAP.md:124 (18 Jul 2026, perilaku LIVE) menyebut
+--           `lead/mql/sql -> prospect` sebagai PROMOSI, yang hanya masuk akal
+--           bila `sql` berada DI BAWAH `prospect`;
+--      (ii) src/modules/crm/v3/tokens.js:76 + migrasi 20260827000002:93/:114
+--           menyatakan "URUTAN BARU (keputusan Den)": `sql` DI ATAS `prospect`.
+--    Ditandai sejak 22 Jul 2026 (AUDIT_CRM_CHAIN_20260722.md:756 dan :811),
+--    belum pernah dijawab. Blueprint tidak menyebut urutan ini sama sekali.
+--    Isi urutannya HANYA setelah pertanyaan terbukanya dijawab — dan kalau
+--    diisi, isi di KEDUA migrasi sekaligus.
 COMMENT ON COLUMN public.accounts.lifecycle_stage IS
-  'Sumbu LIFECYCLE akun. Urutan: lead -> mql -> prospect -> sql -> customer. Dua exit manual dari tahap mana pun: free_agent, lost. Menggantikan account_status, yang di-drop 20260907000002 setelah masa transisi dua-kolom.';
+  'Sumbu LIFECYCLE akun. Tujuh nilai: lead, mql, sql, prospect, customer, free_agent, lost. Gerbang yang HIDUP: akun jadi prospect hanya bila ada inquiry masuk (trigger set_prospect_on_inquiry); jadi customer lewat WON. free_agent dan lost adalah exit manual dari tahap mana pun. ⚠️ URUTAN tahapnya masih PERTANYAAN TERBUKA (dua sumber bertentangan — lihat komentar di migrasi 20260907000001 dan 20260907000002); jangan simpulkan urutan dari daftar nilai di atas maupun dari urutan CHECK. Menggantikan account_status, yang di-drop 20260907000002 setelah masa transisi dua-kolom.';
 
 COMMIT;
 
