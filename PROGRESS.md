@@ -32,6 +32,45 @@
 - **[2026-07-04]** Quotation: tambah opsi Cargo Mode "Project" (tanpa sub-field khusus) + fitur "If Any" per baris charge (dikecualikan dari semua total). Commit `4ebb436`.
 
 ## 2026-09-07
+### Migrasi lifecycle JALUR B **LIVE di produksi** — blokir RENAME akhirnya hilang
+
+`20260907000001_accounts_lifecycle_dual_write` naik ke **produksi** (ref `untmpqceexwxzuhlmyrg`), dijalankan manual
+oleh Den, beberapa jam sesudah verifikasi staging hari yang sama. **Keputusan Terbuka #35 DITUTUP.**
+
+**Angka verifikasi produksi:**
+
+| cek | hasil |
+|---|---|
+| akun | **1.258**, kedua kolom **IDENTIK** (beda = 0) |
+| backfill riwayat | **1.258 = 1.258** akun, nol akun ber-stage NULL |
+| trigger di `accounts` | **6**, `trg_a_sync_lifecycle_columns` di urutan **PERTAMA** — sebelum `trg_set_customer_on_won` yang membacanya |
+| `set_prospect_on_inquiry` | **tiga tahap utuh** `('lead','mql','sql')` di **kedua** kolom |
+| default asimetris | `account_status` DEFAULT `'lead'` · `lifecycle_stage` **tanpa** default |
+
+Snapshot di-refresh (`c8c67f6`): `CREATE TABLE public.` 137 → **138**, `GRANT … TO authenticated` 237 → **238**,
+`CREATE POLICY` 366 → **367**, `COPY public.` tetap **0**. Tujuh baris `-` pada diff semuanya terjelaskan — 2 token
+sesi `pg_dump` + 5 baris badan fungsi versi satu-kolom yang memang digantikan; kelima penggantinya diverifikasi ada.
+
+**⭐ Yang paling layak dicatat:** cek `set_prospect_on_inquiry` lolos **di produksi**, bukan cuma di staging. Ini
+titik paling mudah bocor di seluruh untaian — siapa pun yang menyalin dari migrasi lama akan membawa penyempitan
+`('lead','mql')` tanpa sadar. Ia bersih di ketiga tempat: file migrasi, staging, dan sekarang snapshot produksi.
+
+**Alasan prefix `trg_a_` kini terbukti dari tiga sisi** — penalaran urutan alfabetis (saat ditulis), uji staging,
+dan snapshot produksi (`:12108` sebelum `:12402`). Tidak ada lagi bagian dari klaim itu yang bersandar pada asumsi.
+
+**Utang migrasi produksi: 5 LIVE / 4 tersisa.** `crm_v3_lifecycle` pindah ke kolom LIVE sebagai **DIGANTIKAN** —
+file RENAME aslinya tidak pernah dijalankan dan tidak akan pernah. Yang tersisa: `rls_owner_based`, `sales_targets`,
+`crm_menu_permissions_sales`, `accounts_source_add_whatsapp`.
+
+⏭️ **Yang tersisa dari untaian lifecycle hanya penutupnya** — `20260907000002_accounts_lifecycle_drop_legacy`,
+ber-⛔ STOP, menunggu branch merge + stabil di produksi. Itu **pekerjaan terjadwal, bukan blokir**. Sampai ia jalan,
+`account_status` **sengaja masih ada** dan disinkronkan; itu keadaan transisi yang diharapkan, bukan sisa yang lupa.
+
+⚠️ **Prasyarat merge yang tidak boleh kelewat:** `src/hooks/useCustomFields.js:33` harus memuat **kedua** nama kolom
+selama transisi. Dicatat di `09_ROADMAP.md` §Pekerjaan Sinkron Branch — sengaja **di sana**, bukan terkubur di jurnal
+ini, supaya terbaca saat merge.
+
+
 ### Migrasi lifecycle JALUR B terverifikasi PENUH di staging (belum produksi)
 
 `20260907000001_accounts_lifecycle_dual_write` diuji **penuh di staging** (ref `oovmlhilhqzejnawqkvt`).

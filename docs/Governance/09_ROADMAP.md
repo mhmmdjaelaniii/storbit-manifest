@@ -271,7 +271,7 @@ Detail granular: `PROGRESS.md` (2026-07-06…08) + `CLAUDE.md` Recent. Skema/alu
 
 > Sembilan migrasi CRM v3 ditulis di branch `feature/crm-v3-batch-persiapan`. **Filenya TIDAK ADA di `main`** — migrasi `main` melompat dari `20260826000003` ke `20260831000001`. Daftar ini ada di sini supaya status produksinya bisa dibaca dari `main` **tanpa membuka branch**, karena `main`-lah yang melayani produksi.
 
-**✅ SUDAH LIVE di produksi — JANGAN dijalankan ulang (4):**
+**✅ SUDAH LIVE di produksi — JANGAN dijalankan ulang (5):**
 
 | migrasi | naik | bukti |
 |---|---|---|
@@ -279,14 +279,14 @@ Detail granular: `PROGRESS.md` (2026-07-06…08) + `CLAUDE.md` Recent. Skema/alu
 | `20260830000002_inquiry_owner_backfill_and_lock` | 6 Sep 2026 | `trg_z_lock_inquiry_owner` terpasang |
 | `20260828000001_inquiry_status_history` | **7 Sep 2026** | backfill **531 baris** = jumlah inquiry · nol durasi karangan |
 | `20260828000002_inquiries_closure_fields` | **7 Sep 2026** | **6 kolom** penutupan + 2 FK + index · **5 trigger** total di `inquiries` · sidik-jari rantai WON identik sebelum-sesudah |
+| `20260827000002_crm_v3_lifecycle` → **DIGANTIKAN** | — | ⛔ File aslinya (RENAME) **TIDAK PERNAH DIJALANKAN dan tidak akan pernah**. Digantikan **`20260907000001_accounts_lifecycle_dual_write`** (jalur B: tambah kolom + sinkron dua arah), **LIVE 7 Sep 2026** — 1.258 akun, kedua kolom identik (beda=0), backfill riwayat 1.258=1.258, 6 trigger dgn `trg_a_` di urutan pertama, `set_prospect_on_inquiry` tiga tahap utuh. Penutupnya `20260907000002_accounts_lifecycle_drop_legacy` **ber-⛔ STOP**, menunggu branch merge + stabil di produksi. |
 
 ⚠️ **Header keempat file itu di branch masih menyatakan "PRODUKSI: belum dikonfirmasi" untuk sebagian di antaranya.** Yang berlaku adalah tabel ini. Koreksi header dikerjakan di branch secara terpisah.
 
-**⏳ BELUM dijalankan — tersisa 5:**
+**⏳ BELUM dijalankan — tersisa 4:**
 
 | migrasi | status | catatan |
 |---|---|---|
-| `20260827000002_crm_v3_lifecycle` | ⛔ **TERTAHAN — TAPI SUDAH ADA PENGGANTINYA** | Me-RENAME `accounts.account_status` → `lifecycle_stage`; **produksi patah sebelum branch di-merge** (14 file / 29 baris hidup di `main` masih membaca kolom lama). **File ini TIDAK akan pernah dijalankan.** ✅ **[7 Sep 2026] DIGANTIKAN `20260907000001_accounts_lifecycle_dual_write`** (jalur B: tambah kolom + sinkron dua arah), yang sudah **TERVERIFIKASI PENUH DI STAGING 7 Sep 2026** — 11 uji perilaku lolos, termasuk bukti bahwa trigger sinkron berada di urutan pertama dan bahwa penyempitan #36 tidak terbawa. ⏳ **Menunggu eksekusi di PRODUKSI**; itu satu-satunya yang tersisa. Penutupnya `20260907000002_accounts_lifecycle_drop_legacy` (ber-⛔ STOP, baru boleh jalan sesudah branch merge & stabil). ⚠️ Keputusan Terbuka **#35** (butirnya hidup di branch, bukan di `main`) **belum boleh ditutup** — blokirnya baru hilang setelah penggantinya benar-benar jalan di produksi. ⚠️ `set_prospect_on_inquiry` di penggantinya **disalin apa adanya**, daftar tahap tetap `('lead','mql','sql')` — lihat **#36** dan **#37**. |
 | `20260830000003_inquiries_rls_owner_based` | siap, menyusul | Menukar RLS `created_by = auth.uid()` → `owner_id = auth.uid()`. **Prasyaratnya sudah lunas** (backfill `owner_id` 531/531, 6 Sep). Efek samping disengaja: `WITH CHECK` ikut berbasis `owner_id`, sehingga **pengoperan deal jadi aksi manager-ke-atas**. |
 | `20260830000005_sales_targets` | siap, menyusul | Tabel target penjualan. **Nol pembaca di `src/` milik `main`** — aman kapan pun. |
 | `20260830000001_crm_menu_permissions_sales` | siap, menyusul | Seeding menu permission role `sales`. |
@@ -303,9 +303,15 @@ Detail granular: `PROGRESS.md` (2026-07-06…08) + `CLAUDE.md` Recent. Skema/alu
 
 | butir | keadaan di `main` | yang belum ada di branch |
 |---|---|---|
-| **#35** — blokir RENAME `crm_v3_lifecycle` (jalur A vs B) | Butirnya **hanya hidup di branch**; `main` merujuknya di baris utang migrasi + penanda "#35 dikosongkan". `main` sudah mencatat bahwa **jalan keluarnya TERBUKTI di staging 7 Sep 2026** (`20260907000001`, 11 uji lolos) tapi **#35 belum boleh ditutup** — blokirnya baru hilang setelah migrasinya jalan di **produksi**. | Catatan "jalan keluar terbukti di staging, belum boleh ditutup" **belum ada di butir #35 versi branch**. |
+| **#35** — blokir RENAME `crm_v3_lifecycle` (jalur A vs B) | ✅ **DITUTUP 7 Sep 2026 — jawaban JALUR B**, `20260907000001` LIVE di produksi. | Branch masih menyimpannya **TERBUKA**; belum memuat jawabannya maupun fakta bahwa penggantinya sudah LIVE. |
 | **#36** — `set_prospect_on_inquiry` dipersempit | **TERJAWAB 6 Sep 2026** (isinya disetujui, eksekusinya dipisah jadi migrasi sendiri) **+ ditandai TERGANTUNG pada #37** sejak 7 Sep. | Branch masih menyimpannya dalam keadaan **TERBUKA** — belum memuat jawabannya, **dan** belum memuat tanda ketergantungan pada #37. |
 | **#37** — pertentangan urutan lifecycle (`sql` di atas atau di bawah `prospect`) | **ADA**, ditulis 7 Sep 2026, memblokir #36. | **TIDAK ADA SAMA SEKALI** di branch. |
+
+### ⚠️ PRASYARAT MERGE — satu baris FE yang tidak boleh kelewat
+
+> **`src/hooks/useCustomFields.js:33` HARUS memuat KEDUA nama kolom — `'account_status'` DAN `'lifecycle_stage'` — selama masa transisi dua-kolom.** Daftar itu adalah kolom sistem yang dikecualikan dari custom fields. `main` hari ini hanya mencantumkan `'account_status'`, branch hanya `'lifecycle_stage'`. **Sesudah merge, kolom yang tidak terdaftar akan muncul sebagai custom field di UI** — kelihatan user, bukan cuma kotor di kode.
+>
+> Satu baris, satu file, tapi ia **prasyarat merge**, bukan pekerjaan lanjutan: harus sudah benar pada commit merge-nya. Salah satu nama dicabut lagi nanti, saat `20260907000002_accounts_lifecycle_drop_legacy` men-drop `account_status`.
 
 **Aturan saat menyelaraskan:** nomornya **sama di kedua sisi**, jadi ketiganya melebur jadi satu butir masing-masing — versi `main` yang menang, karena `main` yang memuat jawaban dan ketergantungannya. Jangan membuat nomor baru untuk isi yang sama.
 
@@ -402,7 +408,7 @@ Berdasarkan kondisi LIVE (FASE 0-3 selesai) + `08_TECH_DEBT.md`:
 
 > ⏭️ **#35 SENGAJA DIKOSONGKAN di `main`.** Nomor itu milik branch `feature/crm-v3-batch-persiapan` (blokir RENAME `crm_v3_lifecycle`, jalur A vs B) hasil renomori 6 Sep 2026. Jangan dipakai untuk hal lain — memakainya akan mengulang tabrakan penomoran yang baru saja dibereskan.
 >
-> ✅ **[7 Sep 2026] JALAN KELUAR #35 SUDAH TERBUKTI, TAPI #35 BELUM BOLEH DITUTUP.** Jalur B yang dipilih kini punya migrasi nyata — `20260907000001_accounts_lifecycle_dual_write` — dan migrasi itu **terverifikasi penuh di staging 7 Sep 2026** (11 uji perilaku lolos; trigger sinkron terbukti di urutan pertama; penyempitan #36 terbukti tidak terbawa). **Blokirnya baru hilang setelah migrasi itu dijalankan di PRODUKSI**, bukan sekarang. ⚠️ Butir #35 sendiri hidup di branch, bukan di `main` — catatan ini menyalin faktanya supaya terbaca dari sini; butir aslinya di branch perlu diberi catatan yang sama saat sinkron.
+> ✅✅ **[7 Sep 2026] KEPUTUSAN TERBUKA #35 — DITUTUP. JAWABAN: JALUR B.** Blokir RENAME `accounts.account_status` → `lifecycle_stage` **sudah tidak ada lagi**. Jalur B (tambah kolom + sinkron dua arah) dipilih, ditulis sebagai **`20260907000001_accounts_lifecycle_dual_write`**, diverifikasi penuh di staging, lalu **LIVE DI PRODUKSI 7 Sep 2026** — 1.258 akun, kedua kolom identik, backfill riwayat 1.258=1.258, `trg_a_` di urutan pertama, `set_prospect_on_inquiry` tiga tahap utuh. Bukan lagi "terbukti", melainkan **sudah berjalan**. File RENAME lama `20260827000002` tidak akan pernah dijalankan. ⏭️ Yang TERSISA dari untaian ini hanya penutupnya, `20260907000002_accounts_lifecycle_drop_legacy` (ber-⛔ STOP, menunggu branch merge + stabil di produksi) — itu pekerjaan terjadwal, **bukan blokir**. ⚠️ Nomor #35 **tidak dihapus**. Butirnya sendiri hidup di branch, bukan di `main`; penutupan ini perlu disalin ke sana saat sinkron.
 
 36. **[4 Sep 2026 · ✅ TERJAWAB 6 Sep 2026] `set_prospect_on_inquiry` dipersempit — benar-benar disetujui, atau terselip?** **JAWABAN: isinya DISETUJUI, tapi eksekusinya DIPISAH dari migrasi lifecycle.** Mengeluarkan `sql` dari daftar tahap yang dinaikkan ke `prospect` — dari `('lead','mql','sql')` jadi `('lead','mql')` — **benar secara isi**, dengan tiga alasan: **(1)** lifecycle harus **monoton naik** (prinsip blueprint CRM v3), sedangkan `sql` berada **DI ATAS** `prospect` sehingga perilaku sekarang **menurunkan** akun satu tingkat — melanggar prinsipnya sendiri; **(2)** status `sql` **mahal didapat** (butuh penilaian BANT), dan membuangnya karena satu inquiry masuk **menghapus hasil kualifikasi**; **(3)** **sinyalnya terbalik** — membuat inquiry itu kabar baik, tapi perilaku sekarang justru menghukumnya. ⛔ **TAPI perubahan perilaku bisnis TIDAK BOLEH menumpang di migrasi yang judulnya rename kolom.** Kalau hari ini lolos karena isinya kebetulan benar, besok yang isinya **salah** lolos dengan cara yang persis sama. Itu soal jalur, bukan soal isi.
     ⚠️ **[7 Sep 2026] BUTIR INI TERGANTUNG PADA KEPUTUSAN TERBUKA #37 — jawabannya di bawah TIDAK dicabut, tapi JANGAN dijalankan sebelum #37 dijawab.** Alasan yang dicatat untuk butir ini bersandar pada varian urutan lifecycle di mana **`sql` berada DI ATAS `prospect`** ("lifecycle harus monoton naik; perilaku sekarang menurunkan akun satu tingkat"). Kalau #37 dijawab ke varian sebaliknya — `sql` DI BAWAH `prospect`, seperti yang dideskripsikan `05_WORKFLOW_MAP.md:124` untuk perilaku LIVE — maka `lead/mql/sql → prospect` adalah **KENAIKAN, bukan penurunan**, dan **premis butir ini gugur seluruhnya**: tak ada yang perlu diperbaiki, dan migrasi (b) tak perlu ditulis. Ketiga alasan lain (status `sql` mahal didapat, sinyal terbalik) juga ikut kehilangan pijakannya, karena semuanya berangkat dari asumsi bahwa akun sedang DITURUNKAN.
