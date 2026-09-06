@@ -2,8 +2,57 @@
 -- Migration: 20260907000001_accounts_lifecycle_dual_write
 -- Batch:     CRM v3 — lifecycle JALUR B (pengganti 20260827000002)
 -- Depends:   accounts · profiles · 20260827000001_crm_v3_master_data (LIVE 6 Sep 2026)
--- Status:    BELUM DIJALANKAN — ditulis sebelum eksekusi.
+-- Status:    ✅ TERVERIFIKASI PENUH DI STAGING — 7 Sep 2026 (ref oovmlhilhqzejnawqkvt).
+--            ⛔ BELUM DIJALANKAN DI PRODUKSI. Jangan baca baris di atas sebagai LIVE.
 --            ⚠️ Dijalankan MANUAL di Supabase SQL Editor oleh Den.
+--
+--            JALAN UJI: T0 rekam keadaan -> T1 kembalikan staging ke bentuk
+--            produksi (drop account_lifecycle_history + rename lifecycle_stage
+--            balik jadi account_status) -> T1b kembalikan empat fungsi ke badan
+--            produksi -> T2 jalankan kelima STEP file ini VERBATIM -> 11 uji.
+--
+--            HASIL STRUKTUR:
+--              · STEP 1 — 7 akun, kedua kolom identik, nol NULL
+--              · STEP 2 — 6 trigger di accounts, dan trg_a_sync_lifecycle_columns
+--                TERBUKTI berada di urutan PERTAMA, sebelum trg_set_customer_on_won
+--                yang membacanya. ⭐ Asumsi prefix trg_a_ (lihat STEP 2) kini
+--                TERUJI, bukan lagi penalaran urutan alfabetis di atas kertas.
+--              · STEP 5 — backfill riwayat 7 baris = 7 akun, nol akun ber-stage NULL
+--              · Default ASIMETRIS terpasang benar: account_status DEFAULT 'lead',
+--                lifecycle_stage DEFAULT NULL (lihat kepala soal kenapa asimetris)
+--
+--            HASIL 11 UJI PERILAKU — seluruhnya LOLOS:
+--              0. tulis nilai SAMA ke kolom lama -> NOL baris riwayat baru.
+--                 Jaring `IS DISTINCT FROM` di STEP 2 bekerja.
+--              1. account_status='mql'    -> kedua kolom mql, riwayat prospect->mql
+--              2. lifecycle_stage='sql'   -> kedua kolom sql
+--              3. UPDATE name             -> kedua kolom tetap, NOL riwayat
+--              4. INSERT lewat kolom lama -> customer + kode ter-generate
+--              5. INSERT lewat kolom baru -> customer + kode ter-generate
+--              6. INSERT tanpa keduanya   -> lead + NULL
+--                 (4/5/6 sekaligus membuktikan tiga hal: default asimetris benar,
+--                  sinkron INSERT dua arah benar, dan generate_customer_code
+--                  ber-COALESCE menyala di KEDUA jalur)
+--              7. pipeline_stage='WON'    -> kedua kolom customer, kode ter-generate,
+--                                            became_customer_at terisi
+--              8. ⭐ akun ber-tahap 'sql' + inquiry baru -> kedua kolom 'prospect'.
+--                 PENYEMPITAN Keputusan Terbuka #36 TERBUKTI TIDAK TERBAWA.
+--              9. inquiry ke WON          -> kedua kolom customer
+--             10. backfill riwayat        -> 7 = 7
+--
+--            KEBERSIHAN: seluruh uji ber-ROLLBACK bersih, termasuk code_counters
+--            yang kembali ke last_number=1. Nol akun ZZZTEST tersisa, nol inquiry
+--            uji tersisa.
+--
+--            ⚠️ STAGING SENGAJA DITINGGAL DI KEADAAN TRANSISI (dua kolom, sinkron)
+--            — itu persis keadaan yang akan dialami produksi dan yang dibutuhkan
+--            FE branch. TIDAK dibersihkan; jangan "dirapikan" jadi satu kolom.
+--
+--            ⚠️ BIAYA YANG DITERIMA: 4 baris riwayat transisi NYATA di staging
+--            hilang permanen saat T1 men-drop account_lifecycle_history (8 baris
+--            -> 7 sesudah backfill ulang). Isinya terekam lebih dulu di T0.2.
+--            Ini staging, konsekuensinya diterima — di PRODUKSI T1 tidak berlaku
+--            sama sekali (produksi belum pernah punya tabel itu).
 --
 -- KENAPA FILE INI ADA
 --   20260827000002_crm_v3_lifecycle me-RENAME accounts.account_status ->
@@ -500,6 +549,18 @@ COMMIT;
 --    -- staging 7 akun: 5 customer, 2 prospect
 --
 --    -- T0.3 sidik-jari keempat fungsi SEBELUM disentuh
+--    -- ⚠️⚠️ BACA SEBELUM MEMAKAI HASIL T0.3/T0.4 SEBAGAI TARGET PEMULIHAN —
+--    --    JANGAN. Terbukti membingungkan saat verifikasi 7 Sep 2026.
+--    --    md5 yang direkam di sini adalah versi PASCA-RENAME milik staging
+--    --    (fungsi yang menulis lifecycle_stage), dan formatnya sudah berbeda
+--    --    dari produksi. Mencocokkan hasil T1b ke angka ini akan SELALU gagal,
+--    --    dan kegagalan itu PALSU.
+--    --    PATOKAN YANG BENAR untuk T1b adalah badan fungsi di
+--    --    schema_snapshot.sql PRODUKSI (`git show main:supabase/schema_snapshot.sql`),
+--    --    dicocokkan BARIS PER BARIS — bukan lewat md5. Pada 7 Sep 2026
+--    --    pencocokan itu dilakukan dan hasilnya COCOK.
+--    --    T0.3 tetap berguna untuk SATU hal: bukti bahwa T1b benar-benar
+--    --    mengubah keempat fungsi (md5 sesudah HARUS berbeda dari yang di sini).
 --    SELECT proname, md5(pg_get_functiondef(oid)) AS sidik FROM pg_proc
 --     WHERE proname IN ('generate_customer_code','set_customer_on_won',
 --                       'set_customer_on_inquiry_won','set_prospect_on_inquiry')
