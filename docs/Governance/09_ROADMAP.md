@@ -295,6 +295,23 @@ Detail granular: `PROGRESS.md` (2026-07-06…08) + `CLAUDE.md` Recent. Skema/alu
 ---
 
 
+## Pekerjaan Sinkron Branch — Keputusan Terbuka (per 7 Sep 2026)
+
+> ⏳ **JANGAN DIKERJAKAN SEKARANG.** Diselesaikan **SEKALI saat sinkron/merge** branch `feature/crm-v3-batch-persiapan`, bukan dicicil. Menyentuh branch sekarang berarti mengerjakan hal yang sama **dua kali** — sekali sekarang, sekali lagi saat merge menabrakkan keduanya. Daftar ini ada supaya penyelarasannya tidak terlewat, bukan supaya dikerjakan lebih awal.
+>
+> Latar: `main` dan branch menomori Keputusan Terbuka dari merge-base yang sama tanpa saling tahu, lalu diselaraskan 6 Sep 2026 (branch #32/#33 → #35/#36). Sejak itu **`main` yang bergerak lebih jauh**; branch belum menyusul.
+
+| butir | keadaan di `main` | yang belum ada di branch |
+|---|---|---|
+| **#35** — blokir RENAME `crm_v3_lifecycle` (jalur A vs B) | Butirnya **hanya hidup di branch**; `main` merujuknya di baris utang migrasi + penanda "#35 dikosongkan". `main` sudah mencatat bahwa **jalan keluarnya TERBUKTI di staging 7 Sep 2026** (`20260907000001`, 11 uji lolos) tapi **#35 belum boleh ditutup** — blokirnya baru hilang setelah migrasinya jalan di **produksi**. | Catatan "jalan keluar terbukti di staging, belum boleh ditutup" **belum ada di butir #35 versi branch**. |
+| **#36** — `set_prospect_on_inquiry` dipersempit | **TERJAWAB 6 Sep 2026** (isinya disetujui, eksekusinya dipisah jadi migrasi sendiri) **+ ditandai TERGANTUNG pada #37** sejak 7 Sep. | Branch masih menyimpannya dalam keadaan **TERBUKA** — belum memuat jawabannya, **dan** belum memuat tanda ketergantungan pada #37. |
+| **#37** — pertentangan urutan lifecycle (`sql` di atas atau di bawah `prospect`) | **ADA**, ditulis 7 Sep 2026, memblokir #36. | **TIDAK ADA SAMA SEKALI** di branch. |
+
+**Aturan saat menyelaraskan:** nomornya **sama di kedua sisi**, jadi ketiganya melebur jadi satu butir masing-masing — versi `main` yang menang, karena `main` yang memuat jawaban dan ketergantungannya. Jangan membuat nomor baru untuk isi yang sama.
+
+---
+
+
 ## Next Up
 
 Berdasarkan kondisi LIVE (FASE 0-3 selesai) + `08_TECH_DEBT.md`:
