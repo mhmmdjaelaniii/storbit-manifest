@@ -53,14 +53,55 @@ praktik nyata **selesai**, bukan lagi keadaan berjalan.
 public.` = 133 dan `GRANT … TO authenticated` **tidak boleh turun** dibanding refresh sebelumnya · Keputusan Terbuka
 **#32 DITUTUP** · `03_DATA_MODEL.md` gotcha #23 & `CLAUDE.md` disesuaikan · **+TD-221 (LOW, baru)**.
 
-**⚠️ Langkah manual yang KINI SUDAH BOLEH dijalankan:** refresh `schema_snapshot.sql` sesudah migrasi **B1**
-(`20260827000001_crm_v3_master_data` + `20260830000002_inquiry_owner_backfill_and_lock`). Sebelumnya tertahan karena
-aturan dan praktik saling bertentangan — perintahnya kini baku, jadi penahanan itu **dicabut**. Urutannya tetap:
-migrasi naik ke produksi → refresh snapshot → baru FE.
+**✅ Langkah manual itu SUDAH DIJALANKAN (hari yang sama).** Migrasi **B1**
+(`20260827000001_crm_v3_master_data` + `20260830000002_inquiry_owner_backfill_and_lock`) naik ke produksi, lalu
+`schema_snapshot.sql` di-refresh **manual oleh Den di Terminal** dengan perintah §4 yang baru
+(`--schema-only --schema=public`, pola `-f /tmp/snap.sql && mv`; tanpa `--no-owner`/`--no-privileges`). Snapshot
+ter-commit **terpisah** dari dokumentasi (`229671b`). Refresh **pertama** di bawah §4 hasil koreksi hari ini.
+
+**Hasil verifikasi §4 — seluruhnya lolos terhadap baseline:**
+
+| metrik | sebelum | sesudah |
+|---|---|---|
+| `CREATE TABLE public.` | 133 | **136** (+3 tabel master B1) |
+| `GRANT … TO authenticated;` | 233 | **236** (tidak turun) |
+| `CREATE POLICY` | 353 | **365** (+12 = 4 policy × 3 tabel) |
+| `COPY public.` | 0 | **0** (schema-only, sesuai keputusan) |
+| ukuran | 703.833 byte | **719.988 byte** |
+| baris | 20.263 | 20.672 |
+
+**Kedelapan objek B1 terverifikasi ADA di snapshot:** `channel_types` `:5523` · `loss_reasons` `:6861` ·
+`sla_policies` `:7981` · `inquiries.owner_id` `:6769` · `idx_inquiries_owner_id` `:11058` ·
+`lock_inquiry_owner_when_closed()` `:2304` · `trg_z_lock_inquiry_owner` `:12143` · keempat `accounts_bant_*_check`
+`:3896-3899`. Header dump: database **17.6**, pg_dump **18.4** — versi pg_dump identik dengan snapshot sebelumnya,
+jadi nol noise diff akibat beda versi. Dua baris yang hilang di diff **hanya** token sesi `\restrict`/`\unrestrict`;
+nol SQL substantif hilang. ⚠️ `crm_v3_lifecycle` dan `inquiries_rls_owner_based` **sengaja belum dijalankan**, jadi
+belum tercermin.
 
 **Yang TIDAK berubah:** keputusan ini menghentikan penambahan data, **tidak menghapus** data di commit
 `0c736fb`…`d10e09a` (31 Agu–5 Sep) yang sudah permanen di riwayat Git. Larangan `--no-owner`/`--no-privileges`
 beserta alasan ACL-nya dipertahankan apa adanya.
+
+### Keputusan kedua: `set_prospect_on_inquiry` — isinya disetujui, eksekusinya dipisah
+
+Penyempitan daftar tahap yang dinaikkan ke `prospect` dari `('lead','mql','sql')` jadi `('lead','mql')` **DISETUJUI
+secara isi** (lifecycle harus monoton naik, `sql` ada DI ATAS `prospect` sehingga perilaku sekarang menurunkan akun;
+status `sql` mahal didapat lewat BANT; sinyalnya terbalik — inquiry masuk itu kabar baik tapi malah menghukum), **TAPI
+DIPISAH** dari migrasi `crm_v3_lifecycle`. Alasan pemisahan bukan soal isi melainkan soal jalur: perubahan perilaku
+bisnis tak boleh menumpang di migrasi yang judulnya rename kolom — kalau hari ini lolos karena isinya kebetulan benar,
+besok yang isinya salah lolos dengan cara yang sama.
+
+Bentuk akhirnya **dua migrasi**: **(a)** migrasi lifecycle jalur B menyalin fungsi itu **apa adanya dari produksi**,
+daftar tahap **tetap bertiga**, nol perubahan perilaku — **mengikat**, jangan dibawa serta walau header migrasi lama
+mengklaim sudah disetujui; **(b)** migrasi perilaku berdiri sendiri, dijalankan **setelah branch
+`feature/crm-v3-batch-persiapan` di-merge ke `main` DAN stabil di produksi**, bukan di hari H, dengan judul/deskripsi
+yang menyebut eksplisit bahwa jumlah akun `sql` naik dan `prospect` turun untuk inquiry baru.
+
+⚠️ **Utang yang menempel pada (b), sengaja BUKAN TD lepas:** (b) menghentikan kejadian baru tapi tak memperbaiki akun
+yang sudah terlanjur turun. Hitung dulu berapa banyak sebelum (b) jalan, lalu Den memutuskan dikoreksi atau dibiarkan
+— itu keputusan bisnis karena mengubah angka historis. Detail lengkap + instruksi mengikatnya: `09_ROADMAP.md`
+**Keputusan Terbuka #36 (TERJAWAB)**. ⚠️ Branch masih menyimpan butir yang sama dalam keadaan TERBUKA (juga #36);
+**branch sengaja tidak disentuh** — diselaraskan saat sinkron.
 
 
 ## 2026-09-05
