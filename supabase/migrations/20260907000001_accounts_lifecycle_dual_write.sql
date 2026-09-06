@@ -2,9 +2,34 @@
 -- Migration: 20260907000001_accounts_lifecycle_dual_write
 -- Batch:     CRM v3 — lifecycle JALUR B (pengganti 20260827000002)
 -- Depends:   accounts · profiles · 20260827000001_crm_v3_master_data (LIVE 6 Sep 2026)
--- Status:    ✅ TERVERIFIKASI PENUH DI STAGING — 7 Sep 2026 (ref oovmlhilhqzejnawqkvt).
---            ⛔ BELUM DIJALANKAN DI PRODUKSI. Jangan baca baris di atas sebagai LIVE.
---            ⚠️ Dijalankan MANUAL di Supabase SQL Editor oleh Den.
+-- Status:    ✅✅ LIVE DI PRODUKSI — 7 Sep 2026 (ref untmpqceexwxzuhlmyrg),
+--            dijalankan manual oleh Den di Supabase SQL Editor.
+--            ⛔ JANGAN DIJALANKAN ULANG. ADD COLUMN-nya akan gagal, dan kalau
+--               dipaksa lewat DROP dulu, seluruh riwayat lifecycle hilang.
+--
+--            BUKTI VERIFIKASI PRODUKSI:
+--              · 1.258 akun, kedua kolom IDENTIK (beda = 0)
+--              · backfill riwayat 1.258 = 1.258 akun (nol akun ber-stage NULL)
+--              · 6 trigger di accounts, trg_a_sync_lifecycle_columns di urutan
+--                PERTAMA — sebelum trg_set_customer_on_won yang membacanya
+--              · set_prospect_on_inquiry TIGA TAHAP UTUH ('lead','mql','sql')
+--                di KEDUA kolom → penyempitan Keputusan Terbuka #36 TIDAK
+--                terselundup
+--              · default asimetris benar: account_status DEFAULT 'lead',
+--                lifecycle_stage TANPA default
+--            Snapshot: schema_snapshot.sql commit c8c67f6 (138 tabel public).
+--
+--            ⏭️ Penutupnya 20260907000002_accounts_lifecycle_drop_legacy BELUM
+--            dijalankan dan memang belum boleh — ia ber-⛔ STOP dan menunggu
+--            branch merge ke main + stabil di produksi. Sampai itu terjadi,
+--            account_status SENGAJA masih ada dan disinkronkan.
+--
+-- ── JEJAK: bagaimana ia terbukti SEBELUM naik ke produksi ───────────────────
+--            ✅ TERVERIFIKASI PENUH DI STAGING — 7 Sep 2026 (ref oovmlhilhqzejnawqkvt),
+--            dijalankan lebih dulu di sana dan lolos seluruhnya. Catatan di
+--            bawah SENGAJA DIPERTAHANKAN: ia rekaman bagaimana migrasi ini
+--            dibuktikan sebelum menyentuh produksi, bukan sisa yang bisa
+--            dihapus setelah LIVE.
 --
 --            JALAN UJI: T0 rekam keadaan -> T1 kembalikan staging ke bentuk
 --            produksi (drop account_lifecycle_history + rename lifecycle_stage
