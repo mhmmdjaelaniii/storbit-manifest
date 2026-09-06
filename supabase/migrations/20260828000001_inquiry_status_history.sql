@@ -2,8 +2,18 @@
 -- Migration: 20260828000001_inquiry_status_history
 -- Batch:     CRM v3 — Batch Pipeline (B3), TASK 1
 -- Depends:   inquiries · profiles · 20260827000002_crm_v3_lifecycle (pola B2)
--- Status:    SUDAH DIJALANKAN MANUAL di Supabase SQL Editor — staging (28 Agu 2026).
---            ⚠️ PRODUKSI: belum dikonfirmasi.
+-- Status:    ✅ LIVE DI PRODUKSI — 7 Sep 2026 (dijalankan manual oleh Den di
+--            Supabase SQL Editor, ref untmpqceexwxzuhlmyrg). Sebelumnya staging
+--            28 Agu 2026.
+--            ⛔ JANGAN DIJALANKAN ULANG. CREATE TABLE-nya akan gagal, dan kalau
+--               dipaksa lewat DROP dulu, seluruh riwayat 531 baris hilang.
+--            BUKTI VERIFIKASI PRODUKSI:
+--              · backfill 531 baris = jumlah inquiry ber-status (nol selisih)
+--              · nol baris backfill ber-duration_seconds (nol durasi karangan)
+--              · GRANT authenticated = SELECT saja · 1 policy, cmd = SELECT
+--              · 5 trigger total di inquiries sesudah migrasi kedua
+--            [KOREKSI 7 Sep 2026] Baris Status lama berbunyi "PRODUKSI: belum
+--            dikonfirmasi" — sudah tidak berlaku.
 --
 -- ISI
 --   1. Tabel inquiry_status_history (audit-only) + RLS + GRANT

@@ -3,8 +3,32 @@
 -- Batch:     CRM v3 — Batch Pipeline (B3), TASK 2
 -- Depends:   inquiries · profiles · loss_reasons (migrasi B1, 20260827000001)
 --            · 20260828000001_inquiry_status_history (WAJIB jalan lebih dulu)
--- Status:    SUDAH DIJALANKAN MANUAL di Supabase SQL Editor — staging (28 Agu 2026).
---            ⚠️ PRODUKSI: belum dikonfirmasi.
+-- Status:    ✅ LIVE DI PRODUKSI — 7 Sep 2026 (dijalankan manual oleh Den di
+--            Supabase SQL Editor, ref untmpqceexwxzuhlmyrg), SESUDAH
+--            20260828000001 sesuai urutan mengikat. Sebelumnya staging 28 Agu 2026.
+--            ⛔ JANGAN DIJALANKAN ULANG — ADD COLUMN-nya akan gagal.
+--            BUKTI VERIFIKASI PRODUKSI:
+--              · 6 kolom penutupan + 2 FK + idx_inquiries_closed_at terpasang
+--              · seluruhnya nullable, nol default; lost_reason lama TIDAK di-drop
+--              · 5 trigger total di inquiries (trg_set_customer_on_inquiry_won,
+--                trg_set_prospect_on_inquiry, trg_z_lock_inquiry_owner,
+--                trg_z_log_inquiry_status_change, trg_z_stamp_inquiry_closure)
+--              · sidik-jari rantai WON IDENTIK sebelum & sesudah —
+--                set_customer_on_inquiry_won a75c5da6… · set_inquiry_won_on_so f8dbf22a…
+--                (bukti keempat trigger terlarang di bawah tak tersentuh)
+--            [KOREKSI 7 Sep 2026] Baris Status lama berbunyi "PRODUKSI: belum
+--            dikonfirmasi" — sudah tidak berlaku.
+--
+-- ⭐ PENYIMPANGAN URUTAN EKSEKUSI DI PRODUKSI — dicatat apa adanya, KONSEKUENSINYA
+--    POSITIF, dan ini BUKAN alasan mengubah urutan migrasi.
+--    Rancangannya: log_inquiry_status_change() lahir di 20260828000001 dalam versi
+--    antara yang `reason`-nya NULL, lalu STEP 4 file ini menggantinya dengan versi
+--    final. Di produksi, yang hidup LANGSUNG versi final — versi antara itu tidak
+--    pernah menyala. Akibatnya NOL baris riwayat lahir tanpa alasan: setiap
+--    transisi LOST/CANCELLED yang tercatat sejak menit pertama sudah membawa
+--    `reason`. ⚠️ Urutan 20260828000001 -> file ini TETAP MENGIKAT untuk
+--    environment mana pun yang belum menjalankannya; yang di atas adalah catatan
+--    hasil, bukan izin membalik urutannya.
 --
 -- ⚠️ URUTAN: 20260828000001 DULU, baru file ini. STEP 4 di bawah meng-CREATE OR
 --    REPLACE fungsi yang LAHIR di migrasi itu.
@@ -33,15 +57,23 @@
 --   BEFORE UPDATE milik `inquiries`. Jadi closed_at/closed_by terisi sendiri
 --   untuk WON otomatis — tanpa satu baris pun berubah di rantai SO.
 --
---   BASELINE PERBANDINGAN (⚠️ schema_snapshot.sql BASI, belum di-refresh
---   pasca B1+B2 — masih memuat account_status dan nol tabel master baru):
---     set_inquiry_won_on_so()        -> schema_snapshot.sql:2691-2708
---                                       (sah: B2 tidak menyentuh fungsi ini)
---     set_customer_on_inquiry_won()  -> 20260827000002_crm_v3_lifecycle.sql:196-220
---                                       (versi LIVE; versi di snapshot sudah
---                                        usang, masih memakai account_status)
---   Membandingkan set_customer_on_inquiry_won ke snapshot akan SELALU beda dan
---   itu BUKAN tanda file ini menyentuhnya — itu tanda snapshot yang basi.
+--   BASELINE PERBANDINGAN
+--   [KOREKSI 7 Sep 2026 — DUA klaim di blok ini sebelumnya SALAH. Teks lama
+--    menyatakan (a) "schema_snapshot.sql BASI, belum di-refresh pasca B1" dan
+--    (b) versi LIVE set_customer_on_inquiry_won datang dari
+--    20260827000002_crm_v3_lifecycle.sql:196-220. Keduanya tidak berlaku:]
+--     (a) Snapshot SUDAH di-refresh — commit 229671b, 136 tabel public, di bawah
+--         aturan §4 yang baru (--schema-only --schema=public).
+--     (b) ⚠️ 20260827000002_crm_v3_lifecycle BELUM PERNAH DIJALANKAN di produksi
+--         (tertahan Keputusan Terbuka #35). Jadi yang HIDUP di produksi adalah
+--         versi LAMA set_customer_on_inquiry_won yang masih memakai
+--         account_status — BUKAN versi di file migrasi itu. Memakai file itu
+--         sebagai baseline akan membandingkan produksi dengan sesuatu yang tak
+--         pernah ada di sana.
+--   BASELINE YANG BENAR: bandingkan md5(pg_get_functiondef(oid)) dari pg_proc
+--   SEBELUM dan SESUDAH migrasi ini — runtime, bukan file. Hasil 7 Sep 2026:
+--     set_customer_on_inquiry_won  a75c5da6…  identik sebelum & sesudah
+--     set_inquiry_won_on_so        f8dbf22a…  identik sebelum & sesudah
 -- =============================================================================
 
 
@@ -111,12 +143,20 @@ BEGIN
 END;
 $$;
 
--- Prefix trg_z_ mengikuti aturan urutan trigger CLAUDE.md. Diverifikasi: tidak
--- ada trigger BEFORE UPDATE lain di `inquiries` saat ini (hanya dua AFTER —
--- trg_set_customer_on_inquiry_won dan trg_set_prospect_on_inquiry, plus
--- trg_z_log_inquiry_status_change dari migrasi 20260828000001). Prefiks tetap
--- dipakai supaya urutannya benar bila kelak ada trigger BEFORE lain yang
--- masih mengubah NEW.status.
+-- Prefix trg_z_ mengikuti aturan urutan trigger CLAUDE.md.
+-- [KOREKSI 7 Sep 2026] Komentar lama menyatakan "tidak ada trigger BEFORE UPDATE
+-- lain di `inquiries` saat ini" — itu BASI. Keadaan produksi sesudah B1 + file
+-- ini, 5 trigger, urut nama:
+--     trg_set_customer_on_inquiry_won   AFTER  INSERT OR UPDATE
+--     trg_set_prospect_on_inquiry       AFTER  INSERT
+--     trg_z_lock_inquiry_owner          BEFORE UPDATE OF owner_id   [B1, 6 Sep]
+--     trg_z_log_inquiry_status_change   AFTER  UPDATE               [20260828000001]
+--     trg_z_stamp_inquiry_closure       BEFORE UPDATE               [file ini]
+-- Jadi ada DUA trigger BEFORE UPDATE sekarang, bukan nol. Keduanya tidak
+-- bentrok: `lock` hanya menyala bila statement menyebut owner_id, `stamp` hanya
+-- bila status berpindah ke WON/LOST/CANCELLED, dan urutan namanya (lock < log <
+-- stamp) sudah benar — kedua BEFORE jalan lebih dulu, `log` yang AFTER mencatat
+-- nilai final.
 CREATE TRIGGER trg_z_stamp_inquiry_closure
   BEFORE UPDATE ON public.inquiries
   FOR EACH ROW
